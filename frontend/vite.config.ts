@@ -5,8 +5,10 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: true,        // 绑定 0.0.0.0，允许外部/局域网访问（默认仅本机）
     port: 9090,
     proxy: {
+      // /api 由 Vite 在「服务器侧」代理到 Django，故 Django 只需监听本机即可
       '/api': 'http://localhost:8000',
     },
   },
