@@ -28,8 +28,16 @@
 ## 快速开始
 
 ```bash
+# 1. 建并激活虚拟环境（强烈建议；Debian/Ubuntu 的系统 Python 会拒绝直接装包）
+python3 -m venv .venv
+source .venv/bin/activate                # Windows: .venv\Scripts\activate
+
+# 2. 安装依赖
 pip install -r requirements.txt          # 完整依赖
 # 最小可跑（离线核心）：pip install pandas numpy pyyaml pyarrow pytest
+
+# 3. 把本项目装为可编辑包（src-layout，否则 `python -m aselect.*` 会报 No module named 'aselect'）
+pip install -e .                         # 或临时用：export PYTHONPATH=src
 
 cp config/config.example.yaml config/config.yaml
 
