@@ -39,11 +39,30 @@ def _update(args):
     store = get_storage(cfg)
     ds = get_datasource(cfg)
     print(f"数据源: {ds.name}")
-    update_symbols(ds, store)
+
+    # 各阶段相互独立、单阶段失败不拖垮整体（需求 §3.1：失败重试 + 告警，不中断）
+    try:
+        update_symbols(ds, store)
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️ 股票列表更新失败（用已有列表继续）：{e}")
+
     syms = store.get_symbols()["symbol"].tolist()[: args.limit]
-    store.upsert_fundamentals(ds.fundamentals(syms))
-    update_daily(ds, store, syms, adjust=cfg.datasource.get("adjust", "hfq"))
-    print(f"已更新 {len(syms)} 只。")
+    if not syms:
+        print("本地无股票列表，先确认网络可达 akshare 后重试。")
+        store.close()
+        return
+
+    # 行情优先：逐只拉取，已在 update_daily 内对单只失败做容错
+    n = update_daily(ds, store, syms, adjust=cfg.datasource.get("adjust", "hfq"))
+
+    # 基本面是单次全市场快照接口，较易被限流/断连；失败仅告警，不影响行情
+    try:
+        store.upsert_fundamentals(ds.fundamentals(syms))
+        print("基本面快照已更新。")
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️ 基本面拉取失败，已跳过（PE/ROE 等暂缺，不影响行情/技术指标）：{e}")
+
+    print(f"已处理 {len(syms)} 只，新增/更新日线 {n} 行。")
     store.close()
 
 
