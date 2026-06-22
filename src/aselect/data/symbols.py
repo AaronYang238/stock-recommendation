@@ -17,6 +17,27 @@ SYMBOL_COLS = ["symbol", "name", "exchange", "list_date", "delist_date", "status
 _STATUS_RANK = {"D": 3, "ST": 2, "L": 1}
 
 
+def classify_board(symbol: str | None) -> str:
+    """按证券代码前缀判定所属板块（荐股时标注，增补需求）。
+
+    主板：沪 600/601/603/605、深 000/001/002/003
+    创业板：深 300/301        科创板：沪 688/689
+    北交所：4/8 开头及 920    其余 → 其他
+    """
+    if not symbol:
+        return "其他"
+    s = str(symbol).zfill(6)
+    if s.startswith(("688", "689")):
+        return "科创板"
+    if s.startswith(("300", "301")):
+        return "创业板"
+    if s.startswith(("43", "83", "87", "88", "920")) or s[0] in ("4", "8"):
+        return "北交所"
+    if s.startswith(("60", "000", "001", "002", "003")):
+        return "主板"
+    return "其他"
+
+
 def classify_status(name: str | None, *, default: str = "L") -> str:
     """按证券简称判定状态。名称含 ST / *ST → 风险警示股。"""
     if not name:

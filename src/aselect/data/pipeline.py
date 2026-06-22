@@ -10,6 +10,7 @@ from ..datasource import DataSource
 from ..engine.factors import add_price_factors
 from ..storage import Storage
 from .clean import clean_daily
+from .symbols import classify_board
 
 log = logging.getLogger(__name__)
 
@@ -91,7 +92,8 @@ def build_cross_section(store: Storage, config: Config,
             latest[["symbol", "sentiment", "confidence", "event_type"]],
             on="symbol", how="left")
 
-    # 附股票名
+    # 附股票名 + 板块标注（主板/创业板/科创板/北交所）
     names = store.get_symbols()[["symbol", "name"]]
     cross = cross.merge(names, on="symbol", how="left")
+    cross["board"] = cross["symbol"].map(classify_board)
     return cross
