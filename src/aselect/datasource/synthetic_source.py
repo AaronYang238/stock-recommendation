@@ -9,12 +9,22 @@ import pandas as pd
 
 from .base import DataSource
 
+# 在市普通股：(symbol, name, exchange)
 _DEMO = [
     ("600000", "浦发银行", "SH"), ("600519", "贵州茅台", "SH"),
     ("000001", "平安银行", "SZ"), ("000002", "万科A", "SZ"),
     ("300750", "宁德时代", "SZ"), ("688981", "中芯国际", "SH"),
     ("601318", "中国平安", "SH"), ("000858", "五粮液", "SZ"),
     ("002594", "比亚迪", "SZ"), ("600036", "招商银行", "SH"),
+]
+
+# ST / 退市样本：(symbol, name, exchange, status, delist_date) —
+# 用于离线验证「股票池含历史 ST/退市标的、避免幸存者偏差」。
+_DEMO_SPECIAL = [
+    ("000004", "*ST国华", "SZ", "ST", None),
+    ("600145", "ST石化", "SH", "ST", None),
+    ("002680", "退市长生", "SZ", "D", "2019-11-27"),
+    ("600256", "退市广汇", "SH", "D", "2024-08-22"),
 ]
 
 
@@ -29,7 +39,13 @@ class SyntheticSource(DataSource):
         rows = [{"symbol": s, "name": n, "exchange": e,
                  "list_date": "2015-01-01", "delist_date": None, "status": "L"}
                 for s, n, e in _DEMO]
+        rows += [{"symbol": s, "name": n, "exchange": e,
+                  "list_date": "2010-01-01", "delist_date": dd, "status": st}
+                 for s, n, e, st, dd in _DEMO_SPECIAL]
         return pd.DataFrame(rows)
+
+    def _all_symbols(self) -> list[str]:
+        return ([s for s, *_ in _DEMO] + [s for s, *_ in _DEMO_SPECIAL])
 
     def daily(self, symbol, adjust, start=None, end=None) -> pd.DataFrame:
         # 每个 symbol 用独立但确定的种子
@@ -55,7 +71,7 @@ class SyntheticSource(DataSource):
         return df.reset_index(drop=True)
 
     def fundamentals(self, symbols=None) -> pd.DataFrame:
-        syms = symbols or [s for s, _, _ in _DEMO]
+        syms = symbols or self._all_symbols()
         rng = np.random.default_rng(self.seed)
         rows = []
         for s in syms:

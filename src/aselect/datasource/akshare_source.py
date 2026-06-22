@@ -41,13 +41,72 @@ class AkshareSource(DataSource):
         self.backoff = retry_backoff_s
 
     def list_symbols(self) -> pd.DataFrame:
-        df = _retry(self.ak.stock_info_a_code_name, self.retry, self.backoff)
-        df = df.rename(columns={"code": "symbol", "name": "name"})
-        df["exchange"] = df["symbol"].map(self._exchange_of)
-        df["status"] = "L"  # 在市；历史退市需另接 stock_info_sh/sz_delist 接口补充
-        for c in ("list_date", "delist_date"):
-            df[c] = None
-        return df[["symbol", "name", "exchange", "list_date", "delist_date", "status"]]
+        """全市场代码 + 状态。合并在市(含 ST) 与历史退市标的，避免幸存者偏差。"""
+        from ..data.symbols import classify_status, merge_symbols
+
+        active = _retry(self.ak.stock_info_a_code_name, self.retry, self.backoff)
+        active = active.rename(columns={"code": "symbol", "name": "name"})
+        active["exchange"] = active["symbol"].map(self._exchange_of)
+        active["status"] = active["name"].map(lambda n: classify_status(n))
+        active["list_date"] = None
+        active["delist_date"] = None
+
+        delisted = self._delisted()
+        return merge_symbols(active, delisted)
+
+    def _delisted(self) -> pd.DataFrame:
+        """拉取沪/深历史退市标的。各接口独立 try，单个失效不影响整体。"""
+        frames = []
+        # 上交所终止上市
+        for sym in ("终止上市",):
+            frames.append(self._safe_delist(
+                lambda: self.ak.stock_info_sh_delist(symbol=sym), "SH"))
+        # 深交所终止上市 / 暂停上市
+        for sym in ("终止上市公司", "暂停上市公司"):
+            frames.append(self._safe_delist(
+                lambda s=sym: self.ak.stock_info_sz_delist(symbol=s), "SZ"))
+        frames = [f for f in frames if f is not None and not f.empty]
+        if not frames:
+            return pd.DataFrame(columns=["symbol", "name", "exchange",
+                                         "list_date", "delist_date", "status"])
+        return pd.concat(frames, ignore_index=True)
+
+    def _safe_delist(self, fn, exchange: str) -> pd.DataFrame | None:
+        """调用退市接口并标准化列。接口改版/失效时返回 None（告警，不中断）。"""
+        try:
+            df = _retry(fn, self.retry, self.backoff)
+        except Exception:  # noqa: BLE001 — 退市接口尤其易随上游改版失效
+            return None
+        if df is None or df.empty:
+            return None
+        df = df.rename(columns=self._fuzzy_delist_cols(df.columns))
+        if "symbol" not in df.columns:
+            return None
+        df["exchange"] = exchange
+        df["status"] = "D"
+        df["list_date"] = df.get("list_date")
+        df["delist_date"] = df.get("delist_date")
+        keep = ["symbol", "name", "exchange", "list_date", "delist_date", "status"]
+        for c in keep:
+            if c not in df.columns:
+                df[c] = None
+        return df[keep]
+
+    @staticmethod
+    def _fuzzy_delist_cols(cols) -> dict[str, str]:
+        """退市接口中文列名易变，模糊匹配到统一英文列。"""
+        mapping = {}
+        for c in cols:
+            s = str(c)
+            if "代码" in s:
+                mapping[c] = "symbol"
+            elif "简称" in s or "名称" in s:
+                mapping[c] = "name"
+            elif "终止上市" in s or "退市" in s or "暂停上市" in s:
+                mapping[c] = "delist_date"
+            elif "上市日期" in s:
+                mapping[c] = "list_date"
+        return mapping
 
     def daily(self, symbol, adjust, start=None, end=None) -> pd.DataFrame:
         adj = _ADJUST_MAP.get(adjust, "")
