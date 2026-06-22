@@ -1,0 +1,5 @@
+# Streamlit 运行配置。`streamlit run` 会自动读取本文件（项目根目录下 .streamlit/）。
+[server]
+port = 9090
+# address = "0.0.0.0"   # 需局域网/容器外访问时再放开
+headless = true         # 服务器环境不自动拉起浏览器
