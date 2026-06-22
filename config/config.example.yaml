@@ -1,0 +1,46 @@
+# 个人选股 App 配置示例。
+# 复制为 config/config.yaml 后按需修改；config.yaml 不应提交真实 Key（Key 只走环境变量）。
+
+app:
+  market: cn_a            # 本期仅 A 股（沪深京）
+  disclaimer: "本系统仅供研究，不构成投资建议；实盘前须充分回测并计入成本，盈亏自负。"
+
+# ── 数据源（适配器化，主源失效可回退备用源）──────────────────
+datasource:
+  primary: akshare        # akshare（免费无 Key）
+  fallback: tushare       # 需积分；Key 走环境变量 TUSHARE_TOKEN
+  adjust: hfq             # 复权方式：none | qfq(前复权) | hfq(后复权)；回测默认后复权
+  retry: 3
+  retry_backoff_s: 2
+
+# ── 存储 ────────────────────────────────────────────────────
+storage:
+  backend: sqlite         # sqlite | duckdb(进阶)
+  path: data_store/aselect.sqlite
+  parquet_dir: data_store/parquet
+
+# ── 回测：必须计入 A 股真实交易摩擦 ─────────────────────────
+backtest:
+  benchmark: "000300"     # 沪深300
+  commission: 0.00025     # 佣金（双边，万2.5）
+  stamp_tax: 0.001        # 印花税（卖出单边）
+  transfer_fee: 0.00001   # 过户费
+  slippage: 0.001         # 滑点
+  cash: 1000000
+  t_plus_1: true          # 模拟 T+1
+  limit_up_down: true     # 涨跌停无法成交
+
+# ── AI 模块（热插拔 · 铁律二）──────────────────────────────
+ai:
+  enabled: false          # 全局开关；false 时整套系统仍可运行
+  provider: none          # anthropic | openai | local | none
+  model: claude-haiku-4-5 # 初筛用便宜模型，精读可配贵模型
+  api_key_env: AI_API_KEY # Key 只从环境变量读取，禁止写入代码/仓库
+  base_url: null          # 兼容自托管/OpenAI 协议的本地模型
+  timeout_s: 30
+  cache_dir: .cache/ai    # 同文本不重复请求
+  features:               # 每个接入点可独立开关
+    sentiment: true
+    event_extraction: true
+    nl_to_filter: false
+    report_generation: true

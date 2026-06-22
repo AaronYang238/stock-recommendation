@@ -1,0 +1,17 @@
+[project]
+name = "aselect"
+version = "0.1.0"
+description = "个人选股 App — 本地运行、仅 A 股、确定性核心 + 热插拔 AI"
+requires-python = ">=3.10"
+readme = "README.md"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
