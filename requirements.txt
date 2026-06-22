@@ -14,9 +14,9 @@ pandas-ta>=0.3.14b      # MA/MACD/RSI/KDJ/BOLL...
 # ── 回测（禁止自研，避免未来函数/前视偏差）──────────────────
 backtrader>=1.9.78
 
-# ── 界面（能用 Streamlit 不写前端）──────────────────────────
-streamlit>=1.30
-plotly>=5.18
+# ── 后端服务（React 前端 + Django 后端）─────────────────────
+django>=5.0
+djangorestframework>=3.15
 
 # ── 调度 ──────────────────────────────────────────────────
 apscheduler>=3.10

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.local
+.vite/
+
+# TS 增量构建缓存
+*.tsbuildinfo

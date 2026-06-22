@@ -1,0 +1,3 @@
+# 后端依赖（在仓库根的核心依赖之上额外需要）
+django>=5.0
+djangorestframework>=3.15

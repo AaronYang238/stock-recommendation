@@ -12,18 +12,21 @@
 ## 架构（四层）
 
 ```
-数据源层(akshare/tushare/合成)  →  数据层(采集/清洗/存储)  →  引擎层[确定性核心]  →  应用层(Streamlit)
-                                         ▲AI接入点①              ▲AI接入点②(仅边缘)      ▲AI接入点③
+数据源层(akshare/tushare/合成) → 数据层(采集/清洗/存储) → 引擎层[确定性核心] → 应用层(Django API + React)
+                                       ▲AI接入点①            ▲AI接入点②(仅边缘)     ▲AI接入点③
 ```
 
-| 包 | 职责 |
+| 模块 | 职责 |
 |---|---|
 | `aselect.datasource` | 数据源适配器（主源失效回退备用/合成源） |
 | `aselect.storage` | 存储抽象 + SQLite 实现 |
 | `aselect.data` | 采集、清洗、截面因子表构建 |
 | `aselect.engine` | **确定性核心**：indicators / factors / screener / backtest |
 | `aselect.ai` | 热插拔 AI：`AIAnalyzer` 抽象 + 工厂 + `NullAnalyzer` 降级 + 各适配器 |
-| `aselect.app` | Streamlit 界面 |
+| `backend/` | Django + DRF，把上面核心封装成 REST API（不含业务 ORM，数据仍走 aselect.storage） |
+| `frontend/` | React + Vite + TypeScript 单页前端，消费 `/api`，含板块/状态标注与 ⓘ 术语提示 |
+
+> `aselect` 核心与表现层解耦：Django 只是 REST 外壳，React 只是视图，两条铁律仍由核心保证。
 
 ## 快速开始
 
@@ -44,11 +47,28 @@ cp config/config.example.yaml config/config.yaml
 python -m aselect.cli seed               # 用合成数据离线填充本地库（不联网、可复现）
 python -m aselect.cli screen --top 10    # 多因子打分 + 条件筛选
 python -m aselect.cli backtest 600519    # 单只回测（含 A 股交易摩擦）
-
-streamlit run src/aselect/app/streamlit_app.py   # 图形界面（默认端口 9090，见 .streamlit/config.toml）
 ```
 
 接真实 A 股数据：`python -m aselect.cli update --limit 50`（默认 akshare，免费无 Key）。
+
+## Web 界面（React + Django）
+
+需要两个进程：后端 Django(:8000) 提供 API，前端 Vite(:9090) 提供页面并把 `/api` 代理到后端。
+
+```bash
+# 后端（终端 1）：复用上面的 venv，已 pip install -e .
+pip install -r backend/requirements.txt        # django + djangorestframework
+python backend/manage.py migrate                # 初始化 Django 框架自身的占位库
+python backend/manage.py runserver 8000
+
+# 前端（终端 2）：需 Node 18+
+cd frontend
+npm install
+npm run dev                                     # 打开 http://localhost:9090
+```
+
+打开 `http://localhost:9090`：候选股表格带板块/状态分类与表头 ⓘ 术语提示，点选个股看 K 线、回测与 AI 报告。
+API 端点：`/api/meta`、`/api/candidates`、`/api/stocks/<code>/daily|backtest|report`。
 
 ## 启用 AI（可选，默认关闭）
 
@@ -76,6 +96,7 @@ pytest          # 含：核心无 LLM 依赖、优雅降级、可复现、防注
 - [x] 历史退市/ST 标的补全：合并沪/深退市接口 + 按名称识别 ST，股票池三态(L/ST/D)避免幸存者偏差
 - [x] 荐股板块标注：按代码前缀标注主板/创业板/科创板/北交所（CLI 与 Web 均显示，可按板块筛选）
 - [x] Web 术语悬浮解释：专有名词右上角 ⓘ，悬停显示通俗描述（词典见 `aselect.glossary`）
+- [x] 服务化：Django + DRF 后端 + React/Vite/TS 前端，替代 Streamlit（核心 `aselect` 不变）
 - [ ] 监控预警推送（邮件/Telegram/企业微信）— 待接
 - [ ] 6. NL 筛选与 AI 报告接入真实 Key 联调
 - [ ] 7.（可选）FastAPI 服务化 + 调度

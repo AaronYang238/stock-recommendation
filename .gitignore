@@ -16,9 +16,14 @@ config/config.local.yaml
 # Data & artifacts (本地缓存，不入库)
 data_store/
 *.sqlite
+*.sqlite3
 *.db
 *.parquet
 .cache/
+
+# Node / 前端构建产物
+node_modules/
+frontend/dist/
 
 # IDE / OS
 .idea/

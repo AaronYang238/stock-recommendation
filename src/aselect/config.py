@@ -63,6 +63,12 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     with open(p, "r", encoding="utf-8") as f:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
 
+    # 相对路径一律按仓库根解析，确保从任意 CWD（如 backend/）启动都读到同一份数据
+    storage = raw.get("storage", {}) or {}
+    for key in ("path", "parquet_dir"):
+        if storage.get(key):
+            storage[key] = _abs_under_root(storage[key])
+
     ai_raw = raw.get("ai", {}) or {}
     ai = AIConfig(
         enabled=bool(ai_raw.get("enabled", False)),
@@ -71,14 +77,20 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
         api_key_env=str(ai_raw.get("api_key_env", "AI_API_KEY")),
         base_url=ai_raw.get("base_url") or None,
         timeout_s=int(ai_raw.get("timeout_s", 30)),
-        cache_dir=str(ai_raw.get("cache_dir", ".cache/ai")),
+        cache_dir=_abs_under_root(ai_raw.get("cache_dir", ".cache/ai")),
         features=dict(ai_raw.get("features", {}) or {}),
     )
     return Config(
         app=raw.get("app", {}) or {},
         datasource=raw.get("datasource", {}) or {},
-        storage=raw.get("storage", {}) or {},
+        storage=storage,
         backtest=raw.get("backtest", {}) or {},
         ai=ai,
         raw=raw,
     )
+
+
+def _abs_under_root(path: str) -> str:
+    """相对路径解析到仓库根；绝对路径原样返回。"""
+    p = Path(path)
+    return str(p if p.is_absolute() else (ROOT / p))
