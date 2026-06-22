@@ -16,6 +16,14 @@ SYMBOL_COLS = ["symbol", "name", "exchange", "list_date", "delist_date", "status
 # 状态优先级：退市 > ST > 在市（合并冲突时取更"危险"的状态）
 _STATUS_RANK = {"D": 3, "ST": 2, "L": 1}
 
+# 状态代码 → 候选股展示标签
+STATUS_LABELS = {"L": "正常", "ST": "ST", "D": "退市"}
+
+
+def status_label(code: str | None) -> str:
+    """状态代码转中文标签，供候选股列表展示。"""
+    return STATUS_LABELS.get(code, code or "未知")
+
 
 def classify_board(symbol: str | None) -> str:
     """按证券代码前缀判定所属板块（荐股时标注，增补需求）。

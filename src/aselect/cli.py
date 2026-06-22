@@ -58,7 +58,8 @@ def _screen(args):
         sort_by="total_score", ascending=False, limit=args.top,
     )
     result = screen(scored, spec)
-    cols = [c for c in ["symbol", "name", "board", "pe", "roe", "total_score"]
+    cols = [c for c in ["symbol", "name", "board", "status_label", "pe", "roe",
+                        "total_score"]
             if c in result.columns]
     print(f"\n[{spec.name}] 命中 {len(result)} 只：")
     print(result[cols].to_string(index=False))

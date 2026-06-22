@@ -54,6 +54,7 @@ def header(label: str, *terms: str) -> None:
 # 候选表：列 → (中文表头, 术语词典键)
 _COLS = {
     "symbol": ("代码", None), "name": ("名称", None), "board": ("板块", "板块"),
+    "status_label": ("状态", "状态"),
     "pe": ("PE", "PE"), "pb": ("PB", "PB"), "roe": ("ROE", "ROE"),
     "revenue_yoy": ("营收同比", "营收同比"), "mom_60": ("动量(60)", "动量"),
     "score_value": ("价值分", "多因子综合得分"), "score_quality": ("质量分", "多因子综合得分"),
@@ -106,6 +107,11 @@ top_n = st.sidebar.number_input("取前 N", 5, 100, 20)
 boards = sorted(scored["board"].dropna().unique()) if "board" in scored else []
 pick_boards = st.sidebar.multiselect("板块", boards, default=boards,
                                      help=_BOARD_HELP)
+statuses = sorted(scored["status_label"].dropna().unique()) if "status_label" in scored else []
+# 默认排除「退市」，避免误把已退市标的当候选；用户可手动勾选纳入
+default_status = [s for s in statuses if s != "退市"]
+pick_status = st.sidebar.multiselect("状态（ST/退市）", statuses, default=default_status,
+                                     help=describe("状态"))
 
 spec = FilterSpec(
     name="界面筛选",
@@ -115,15 +121,18 @@ spec = FilterSpec(
 result = screen(scored, spec)
 if pick_boards and "board" in result.columns:
     result = result[result["board"].isin(pick_boards)]
+if pick_status and "status_label" in result.columns:
+    result = result[result["status_label"].isin(pick_status)]
 
 header(f"候选股（命中 {len(result)} 只）", "多因子综合得分")
-show_cols = [c for c in ["symbol", "name", "board", "pe", "pb", "roe",
-                         "revenue_yoy", "mom_60", "score_value",
+show_cols = [c for c in ["symbol", "name", "board", "status_label", "pe", "pb",
+                         "roe", "revenue_yoy", "mom_60", "score_value",
                          "score_quality", "total_score"]
              if c in result.columns]
 st.dataframe(result[show_cols], use_container_width=True,
              column_config=_column_config(show_cols), hide_index=True)
-st.caption("板块说明：主板/创业板/科创板/北交所 —— 鼠标悬停表头 ⓘ 查看差异。")
+st.caption("分类维度：板块(主板/创业板/科创板/北交所) + 状态(正常/ST/退市) "
+           "—— 鼠标悬停表头 ⓘ 查看说明。默认已排除退市标的。")
 
 # ── 单只详情：K 线 + 回测 + AI 报告 ──
 st.divider()
@@ -133,7 +142,11 @@ if "board" in scored.columns and pick:
     brow = scored.loc[scored["symbol"] == pick]
     if not brow.empty:
         bd = brow["board"].iloc[0]
-        st.markdown(term(f"板块：{bd}", "板块"), unsafe_allow_html=True)
+        sl = brow["status_label"].iloc[0] if "status_label" in brow else ""
+        chips = term(f"板块：{bd}", "板块") + " &nbsp; " + term(f"状态：{sl}", "状态")
+        st.markdown(chips, unsafe_allow_html=True)
+        if sl in ("ST", "退市"):
+            st.warning(f"⚠️ 该标的为「{sl}」，风险较高，请谨慎。")
 adjust = cfg.datasource.get("adjust", "hfq")
 daily = store.get_daily(pick, adjust)
 
