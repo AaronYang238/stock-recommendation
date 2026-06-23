@@ -18,6 +18,16 @@ _DEMO = [
     ("002594", "比亚迪", "SZ"), ("600036", "招商银行", "SH"),
 ]
 
+# 行业（供因子行业中性化用；真实数据需另接行业分类接口）
+_INDUSTRY = {
+    "600000": "银行", "000001": "银行", "600036": "银行",
+    "600519": "白酒", "000858": "白酒",
+    "000002": "房地产", "300750": "电池", "688981": "半导体",
+    "601318": "保险", "002594": "汽车",
+    "000004": "科技", "600145": "石化", "002680": "医药", "600256": "能源",
+}
+
+
 # ST / 退市样本：(symbol, name, exchange, status, delist_date) —
 # 用于离线验证「股票池含历史 ST/退市标的、避免幸存者偏差」。
 _DEMO_SPECIAL = [
@@ -72,12 +82,12 @@ class SyntheticSource(DataSource):
 
     def fundamentals(self, symbols=None) -> pd.DataFrame:
         syms = symbols or self._all_symbols()
-        rng = np.random.default_rng(self.seed)
         rows = []
         for s in syms:
             r = np.random.default_rng(self.seed + (hash(s) % 10_000))
             rows.append({
                 "symbol": s, "date": pd.Timestamp.today().strftime("%Y-%m-%d"),
+                "industry": _INDUSTRY.get(s, "其他"),   # 供行业中性化
                 "pe": round(float(r.uniform(5, 60)), 2),
                 "pb": round(float(r.uniform(0.5, 12)), 2),
                 "ps": round(float(r.uniform(0.5, 20)), 2),

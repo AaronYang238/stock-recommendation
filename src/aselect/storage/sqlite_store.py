@@ -34,6 +34,7 @@ CREATE INDEX IF NOT EXISTS idx_daily_symbol ON daily(symbol, adjust);
 CREATE TABLE IF NOT EXISTS fundamentals (
     symbol TEXT NOT NULL,
     date   TEXT NOT NULL,     -- 报告期 / 快照日
+    industry TEXT,            -- 行业分类（供因子行业中性化）
     pe REAL, pb REAL, ps REAL,
     roe REAL, roa REAL,
     revenue_yoy REAL, profit_yoy REAL,
@@ -63,7 +64,17 @@ class SQLiteStorage(Storage):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path))
         self.conn.executescript(_SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """对已存在的旧库补加后来新增的列（CREATE TABLE IF NOT EXISTS 不会改表）。"""
+        wanted = {"fundamentals": [("industry", "TEXT")]}
+        for table, cols in wanted.items():
+            existing = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for name, typ in cols:
+                if name not in existing:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
 
     # ── symbols ──
     def upsert_symbols(self, df: pd.DataFrame) -> None:
