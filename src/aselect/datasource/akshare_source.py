@@ -152,6 +152,31 @@ class AkshareSource(DataSource):
             df = df[df["date"] <= end]
         return df
 
+    def industry_map(self) -> dict[str, str]:
+        """遍历东方财富行业板块 → 成分股，建 symbol→行业 映射。
+
+        约 90 个板块、每板块一次成分查询；单板块失败跳过不影响整体。
+        网络/接口异常时返回已得到的部分映射（可能为空）。
+        """
+        mapping: dict[str, str] = {}
+        try:
+            names = _retry(self.ak.stock_board_industry_name_em, self.retry, self.backoff)
+        except Exception:  # noqa: BLE001
+            return mapping
+        col = "板块名称" if "板块名称" in names.columns else names.columns[0]
+        for ind in names[col].tolist():
+            try:
+                cons = _retry(lambda i=ind: self.ak.stock_board_industry_cons_em(symbol=i),
+                              self.retry, self.backoff)
+            except Exception:  # noqa: BLE001
+                continue
+            code_col = "代码" if "代码" in cons.columns else None
+            if not code_col:
+                continue
+            for code in cons[code_col].astype(str):
+                mapping[code.zfill(6)] = ind
+        return mapping
+
     @staticmethod
     def _exchange_of(symbol: str) -> str:
         if symbol.startswith(("60", "68", "9")):

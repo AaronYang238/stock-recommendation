@@ -33,3 +33,7 @@ class DataSource(ABC):
                     start: str | None = None, end: str | None = None) -> pd.DataFrame:
         """指数日线（基准对比用）。默认未实现。"""
         raise NotImplementedError
+
+    def industry_map(self) -> dict[str, str]:
+        """symbol → 行业 映射（供因子行业中性化）。默认空，子类可实现。"""
+        return {}

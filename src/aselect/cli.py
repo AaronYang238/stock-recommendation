@@ -55,10 +55,16 @@ def _update(args):
     # 行情优先：逐只拉取，已在 update_daily 内对单只失败做容错
     n = update_daily(ds, store, syms, adjust=cfg.datasource.get("adjust", "hfq"))
 
-    # 基本面是单次全市场快照接口，较易被限流/断连；失败仅告警，不影响行情
+    # 基本面 + 行业（行业供因子行业中性化）；失败仅告警，不影响行情
     try:
-        store.upsert_fundamentals(ds.fundamentals(syms))
-        print("基本面快照已更新。")
+        from .data.symbols import attach_industry
+        fund = ds.fundamentals(syms)
+        try:
+            fund = attach_industry(fund, ds.industry_map())
+        except Exception as ie:  # noqa: BLE001
+            print(f"⚠️ 行业映射获取失败，行业中性将退化：{ie}")
+        store.upsert_fundamentals(fund)
+        print("基本面 + 行业已更新。")
     except Exception as e:  # noqa: BLE001
         print(f"⚠️ 基本面拉取失败，已跳过（PE/ROE 等暂缺，不影响行情/技术指标）：{e}")
 

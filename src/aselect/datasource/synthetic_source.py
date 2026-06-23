@@ -4,10 +4,17 @@
 """
 from __future__ import annotations
 
+import zlib
+
 import numpy as np
 import pandas as pd
 
 from .base import DataSource
+
+
+def _stable_seed(symbol: str) -> int:
+    """跨进程稳定的 symbol 派生种子（内置 hash() 带盐、跨进程不一致 → 不可复现）。"""
+    return zlib.crc32(str(symbol).encode("utf-8")) % 100_000
 
 # 在市普通股：(symbol, name, exchange)
 _DEMO = [
@@ -59,10 +66,10 @@ class SyntheticSource(DataSource):
 
     def daily(self, symbol, adjust, start=None, end=None) -> pd.DataFrame:
         # 每个 symbol 用独立但确定的种子
-        rng = np.random.default_rng(self.seed + (hash(symbol) % 10_000))
+        rng = np.random.default_rng(self.seed + (_stable_seed(symbol) % 10_000))
         dates = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=self.days)
         ret = rng.normal(0.0004, 0.018, len(dates))
-        base = 10 + (hash(symbol) % 90)
+        base = 10 + (_stable_seed(symbol) % 90)
         close = base * np.exp(np.cumsum(ret))
         high = close * (1 + np.abs(rng.normal(0, 0.01, len(dates))))
         low = close * (1 - np.abs(rng.normal(0, 0.01, len(dates))))
@@ -84,7 +91,7 @@ class SyntheticSource(DataSource):
         syms = symbols or self._all_symbols()
         rows = []
         for s in syms:
-            r = np.random.default_rng(self.seed + (hash(s) % 10_000))
+            r = np.random.default_rng(self.seed + (_stable_seed(s) % 10_000))
             rows.append({
                 "symbol": s, "date": pd.Timestamp.today().strftime("%Y-%m-%d"),
                 "ann_date": pd.Timestamp.today().strftime("%Y-%m-%d"),  # 披露日=今日(快照)

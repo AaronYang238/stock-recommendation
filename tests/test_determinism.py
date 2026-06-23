@@ -13,6 +13,14 @@ def test_synthetic_source_reproducible():
     pd.testing.assert_frame_equal(a, b)
 
 
+def test_synthetic_reproducible_across_process():
+    """种子用 crc32 派生（非内置带盐 hash）→ 跨进程可复现，固定值锁定。"""
+    from aselect.datasource.synthetic_source import _stable_seed
+    assert _stable_seed("600519") == 68309
+    d = SyntheticSource().daily("600519", "hfq")
+    assert round(float(d["close"].iloc[0]), 2) == 97.77
+
+
 def test_indicators_deterministic():
     df = SyntheticSource().daily("000001", "hfq")
     i1 = add_indicators(df)

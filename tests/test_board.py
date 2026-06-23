@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-from aselect.data.symbols import classify_board, status_label
+import pandas as pd
+
+from aselect.data.symbols import attach_industry, classify_board, status_label
 from aselect.glossary import describe
 
 
@@ -28,6 +30,24 @@ def test_board_pads_short_code():
 ])
 def test_status_label(code, expected):
     assert status_label(code) == expected
+
+
+def test_attach_industry_fills_and_respects_existing():
+    df = pd.DataFrame({"symbol": ["600519", "000001"], "industry": ["白酒", None]})
+    out = attach_industry(df, {"000001": "银行"})   # 映射补 000001，600519 保留白酒
+    assert out.set_index("symbol")["industry"].to_dict() == {"600519": "白酒", "000001": "银行"}
+
+
+def test_attach_industry_zfills_symbol():
+    df = pd.DataFrame({"symbol": ["1"]})
+    out = attach_industry(df, {"000001": "银行"})
+    assert out["industry"].iloc[0] == "银行"
+
+
+def test_attach_industry_empty_mapping_noop():
+    df = pd.DataFrame({"symbol": ["600519"], "industry": ["白酒"]})
+    assert attach_industry(df, {}).equals(df)
+    assert attach_industry(df, None).equals(df)
 
 
 def test_glossary_has_board_status_and_core_terms():

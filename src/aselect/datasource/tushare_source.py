@@ -26,12 +26,23 @@ class TushareSource(DataSource):
 
     def list_symbols(self) -> pd.DataFrame:
         df = self.pro.stock_basic(exchange="", list_status="L",
-                                  fields="ts_code,name,exchange,list_date")
+                                  fields="ts_code,name,exchange,list_date,industry")
         df = df.rename(columns={"ts_code": "symbol"})
         df["symbol"] = df["symbol"].str.split(".").str[0]
         df["delist_date"] = None
         df["status"] = "L"
+        self._industry_cache = dict(zip(df["symbol"], df.get("industry", "")))
         return df[["symbol", "name", "exchange", "list_date", "delist_date", "status"]]
+
+    def industry_map(self) -> dict[str, str]:
+        """tushare stock_basic 自带申万行业字段，直接取用。"""
+        cache = getattr(self, "_industry_cache", None)
+        if cache:
+            return {k: v for k, v in cache.items() if v}
+        df = self.pro.stock_basic(exchange="", list_status="L",
+                                  fields="ts_code,industry")
+        df["symbol"] = df["ts_code"].str.split(".").str[0]
+        return {r.symbol: r.industry for r in df.itertuples() if r.industry}
 
     def daily(self, symbol, adjust, start=None, end=None) -> pd.DataFrame:
         ts_code = self._to_ts_code(symbol)
@@ -46,7 +57,51 @@ class TushareSource(DataSource):
         return df[["date", "open", "high", "low", "close", "volume", "amount"]].iloc[::-1]
 
     def fundamentals(self, symbols=None) -> pd.DataFrame:
-        raise NotImplementedError("tushare 基本面接口待按需补全")
+        """估值(daily_basic 最新) + 财务指标(fina_indicator 最新一期，含披露日 ann_date)。
+
+        逐只拉取，适配 `update --limit N` 的批量；单只失败跳过。
+        - 估值 pe/pb/ps/total_mv 为价格快照（按交易日变化）。
+        - roe/毛利率/负债率/营收同比/净利同比 来自财报，date=报告期、ann_date=披露日，
+          供 point-in-time 对齐（铁律2）。
+        """
+        if not symbols:
+            return pd.DataFrame()
+        imap = self.industry_map()
+        rows = []
+        for sym in symbols:
+            ts_code = self._to_ts_code(sym)
+            row = {"symbol": sym, "industry": imap.get(sym)}
+            try:
+                db = self.pro.daily_basic(
+                    ts_code=ts_code,
+                    fields="trade_date,pe,pb,ps,total_mv")
+                if db is not None and not db.empty:
+                    last = db.sort_values("trade_date").iloc[-1]
+                    row.update(pe=_f(last.get("pe")), pb=_f(last.get("pb")),
+                               ps=_f(last.get("ps")),
+                               total_mv=_f(last.get("total_mv")) * 1e4
+                               if last.get("total_mv") is not None else None)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                fi = self.pro.fina_indicator(
+                    ts_code=ts_code,
+                    fields="end_date,ann_date,roe,roa,grossprofit_margin,"
+                           "debt_to_assets,or_yoy,netprofit_yoy")
+                if fi is not None and not fi.empty:
+                    f = fi.sort_values("end_date").iloc[-1]
+                    row.update(
+                        date=_d(f.get("end_date")), ann_date=_d(f.get("ann_date")),
+                        roe=_f(f.get("roe")), roa=_f(f.get("roa")),
+                        gross_margin=_f(f.get("grossprofit_margin")),
+                        debt_ratio=_f(f.get("debt_to_assets")),
+                        revenue_yoy=_f(f.get("or_yoy")), profit_yoy=_f(f.get("netprofit_yoy")))
+            except Exception:  # noqa: BLE001
+                pass
+            row.setdefault("date", pd.Timestamp.today().strftime("%Y-%m-%d"))
+            row.setdefault("ann_date", row["date"])
+            rows.append(row)
+        return pd.DataFrame(rows)
 
     @staticmethod
     def _to_ts_code(symbol: str) -> str:
@@ -55,3 +110,21 @@ class TushareSource(DataSource):
         if symbol.startswith(("43", "83", "87", "88", "92")):
             return f"{symbol}.BJ"
         return f"{symbol}.SZ"
+
+
+def _f(v):
+    """转 float；空/非数返回 None。"""
+    try:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _d(v):
+    """tushare 日期 YYYYMMDD → YYYY-MM-DD；空返回 None。"""
+    if not v or pd.isna(v):
+        return None
+    s = str(int(v)) if isinstance(v, (int, float)) else str(v)
+    return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 else s

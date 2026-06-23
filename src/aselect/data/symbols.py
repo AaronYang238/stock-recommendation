@@ -25,6 +25,22 @@ def status_label(code: str | None) -> str:
     return STATUS_LABELS.get(code, code or "未知")
 
 
+def attach_industry(df: pd.DataFrame, mapping: dict[str, str] | None) -> pd.DataFrame:
+    """按 symbol→行业 映射补充 industry 列（供行业中性化）。
+
+    纯函数：mapping 为空则原样返回；已有 industry 的行不被空映射覆盖。
+    """
+    if not mapping or df is None or df.empty or "symbol" not in df.columns:
+        return df
+    out = df.copy()
+    mapped = out["symbol"].astype(str).str.zfill(6).map(mapping)
+    if "industry" in out.columns:
+        out["industry"] = mapped.fillna(out["industry"])
+    else:
+        out["industry"] = mapped
+    return out
+
+
 def classify_board(symbol: str | None) -> str:
     """按证券代码前缀判定所属板块（荐股时标注，增补需求）。
 
