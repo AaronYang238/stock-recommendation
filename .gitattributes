@@ -1,0 +1,2 @@
+# Shell 脚本强制 LF：CRLF 会让 Linux 上的 shebang(#!/usr/bin/env bash) 失效
+*.sh text eol=lf

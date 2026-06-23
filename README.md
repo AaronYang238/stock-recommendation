@@ -28,7 +28,19 @@
 
 > `aselect` 核心与表现层解耦：Django 只是 REST 外壳，React 只是视图，两条铁律仍由核心保证。
 
-## 快速开始
+## 一键启动（推荐）
+
+自动建 venv、装依赖、建配置、灌离线数据，并同时拉起后端(:8000)与前端(:9090)，`Ctrl+C` 一并停止：
+
+```bash
+bash scripts/start.sh            # Linux / macOS（首次会装依赖，稍慢）
+#   pwsh scripts/start.ps1       # Windows / PowerShell
+#   bash scripts/start.sh --no-seed   # 已灌真实数据时跳过合成数据
+```
+
+打开 `http://localhost:9090` 即可。需要真实数据再单独 `python -m aselect.cli update`（见下）。
+
+## 快速开始（手动分步）
 
 ```bash
 # 1. 建并激活虚拟环境（强烈建议；Debian/Ubuntu 的系统 Python 会拒绝直接装包）
