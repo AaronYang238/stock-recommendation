@@ -38,14 +38,17 @@ class Storage(ABC):
     def upsert_fundamentals(self, df: pd.DataFrame) -> None: ...
 
     @abstractmethod
-    def get_fundamentals(self, symbols: list[str] | None = None) -> pd.DataFrame: ...
+    def get_fundamentals(self, symbols: list[str] | None = None,
+                         as_of: str | None = None) -> pd.DataFrame:
+        """as_of：point-in-time 截止日，只取截至该日已披露的财务数据（防前视）。"""
 
     # ── AI 产出特征（情绪分/事件标签等，作为普通因子列存储）──
     @abstractmethod
     def upsert_features(self, df: pd.DataFrame) -> None: ...
 
     @abstractmethod
-    def get_features(self, symbols: list[str] | None = None) -> pd.DataFrame: ...
+    def get_features(self, symbols: list[str] | None = None,
+                     as_of: str | None = None) -> pd.DataFrame: ...
 
     def close(self) -> None:  # 可选实现
         pass

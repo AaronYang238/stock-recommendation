@@ -39,6 +39,7 @@ def candidates(request):
         top=_to_int(q.get("top"), 20),
         boards=_csv(q.get("boards")),
         statuses=_csv(q.get("statuses")),
+        as_of=q.get("as_of") or None,
     )
     return Response(data)
 

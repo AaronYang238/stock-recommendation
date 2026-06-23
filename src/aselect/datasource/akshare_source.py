@@ -133,8 +133,12 @@ class AkshareSource(DataSource):
         df = df.rename(columns={k: v for k, v in colmap.items() if k in df.columns})
         if symbols:
             df = df[df["symbol"].isin(symbols)]
-        df["date"] = pd.Timestamp.today().strftime("%Y-%m-%d")
-        cols = ["symbol", "date", "pe", "pb", "total_mv"]
+        today = pd.Timestamp.today().strftime("%Y-%m-%d")
+        # 实时快照：报告期与披露日都记为今日 —— 它只在「当下」可信，
+        # PIT 模式下用于历史回测会被正确排除（真实 PIT 财务需接 stock_financial_* 的公告日）。
+        df["date"] = today
+        df["ann_date"] = today
+        cols = ["symbol", "date", "ann_date", "pe", "pb", "total_mv"]
         return df[[c for c in cols if c in df.columns]]
 
     def index_daily(self, index_code, start=None, end=None) -> pd.DataFrame:

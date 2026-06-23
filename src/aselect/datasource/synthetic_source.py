@@ -87,6 +87,7 @@ class SyntheticSource(DataSource):
             r = np.random.default_rng(self.seed + (hash(s) % 10_000))
             rows.append({
                 "symbol": s, "date": pd.Timestamp.today().strftime("%Y-%m-%d"),
+                "ann_date": pd.Timestamp.today().strftime("%Y-%m-%d"),  # 披露日=今日(快照)
                 "industry": _INDUSTRY.get(s, "其他"),   # 供行业中性化
                 "pe": round(float(r.uniform(5, 60)), 2),
                 "pb": round(float(r.uniform(0.5, 12)), 2),

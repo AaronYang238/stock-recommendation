@@ -102,6 +102,8 @@ pytest          # 含：核心无 LLM 依赖、优雅降级、可复现、防注
 - [x] Web 术语悬浮解释：专有名词右上角 ⓘ，悬停显示通俗描述（词典见 `aselect.glossary`）
 - [x] 服务化：Django + DRF 后端 + React/Vite/TS 前端，替代 Streamlit（核心 `aselect` 不变）
 - [x] 个股查询：按代码 + 起止日期查指定区间 K 线（蜡烛图 + MA20/MA60），`daily` 接口支持 `start/end`
+- [x] 因子中性化：去极值 + Z-score + 行业/市值中性（OLS 残差），`total_score` 为中性化 Z 值
+- [x] Point-in-time 防前视：基本面/特征带披露日 `ann_date`，截面按 `as_of` 只取已披露数据（`candidates` 接口支持 `as_of`）
 - [ ] 监控预警推送（邮件/Telegram/企业微信）— 待接
 - [ ] 6. NL 筛选与 AI 报告接入真实 Key 联调
 - [ ] 接入点①：舆情/公告 情绪与事件因子（爬取/拉取财经文本 → AI 落地为因子）— 见下方「规划」，**暂不实现**

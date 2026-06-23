@@ -50,19 +50,25 @@ def build_universe(store: Storage, include_delisted: bool = True) -> list[str]:
 
 
 def build_cross_section(store: Storage, config: Config,
-                        symbols: list[str] | None = None) -> pd.DataFrame:
+                        symbols: list[str] | None = None,
+                        as_of: str | None = None) -> pd.DataFrame:
     """构建截面因子表：基本面 + 价格因子(动量/波动) + AI 特征，一行一只股票。
 
     供 engine.factors.score_factors 与 screener.screen 直接消费。
     AI 特征若不存在则缺列 —— 引擎对缺列做中性处理，不影响运行（优雅降级）。
+
+    as_of（point-in-time，铁律2 防前视）：给定时，基本面/AI特征只取**截至该日已披露**
+    的记录；每只再取「已披露中报告期最新」的一条。as_of=None 为实时模式，取最新已披露。
+    回测中务必传入回测当日的 as_of，否则会用到未来才公布的财报，收益虚高。
     """
     syms = symbols or build_universe(store)
-    fund = store.get_fundamentals(syms)
+    fund = store.get_fundamentals(syms, as_of=as_of)
     if fund.empty:
         base = pd.DataFrame({"symbol": syms})
     else:
-        # 每只取最新一条基本面快照
-        base = (fund.sort_values("date")
+        # 每只取「已披露记录中报告期最新」的一条（PIT 下 fund 已按 ann_date 过滤）
+        sort_keys = [c for c in ("date", "ann_date") if c in fund.columns]
+        base = (fund.sort_values(sort_keys)
                     .groupby("symbol", as_index=False).tail(1)
                     .reset_index(drop=True))
 
@@ -83,10 +89,11 @@ def build_cross_section(store: Storage, config: Config,
 
     cross = base.merge(price, on="symbol", how="left")
 
-    # AI 特征（情绪/事件），缺失即缺列 → 引擎中性处理
-    feats = store.get_features(syms)
+    # AI 特征（情绪/事件），缺失即缺列 → 引擎中性处理。PIT 下按 as_of 过滤防前视
+    feats = store.get_features(syms, as_of=as_of)
     if not feats.empty:
-        latest = (feats.sort_values("date")
+        feat_sort = [c for c in ("date", "as_of") if c in feats.columns]
+        latest = (feats.sort_values(feat_sort)
                        .groupby("symbol", as_index=False).tail(1))
         cross = cross.merge(
             latest[["symbol", "sentiment", "confidence", "event_type"]],

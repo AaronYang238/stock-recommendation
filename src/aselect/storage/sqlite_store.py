@@ -33,7 +33,8 @@ CREATE INDEX IF NOT EXISTS idx_daily_symbol ON daily(symbol, adjust);
 
 CREATE TABLE IF NOT EXISTS fundamentals (
     symbol TEXT NOT NULL,
-    date   TEXT NOT NULL,     -- 报告期 / 快照日
+    date   TEXT NOT NULL,     -- 报告期（财务数据"属于"哪一期）
+    ann_date TEXT,            -- 披露日(公告日)：信息真正公开的日期，point-in-time 对齐用
     industry TEXT,            -- 行业分类（供因子行业中性化）
     pe REAL, pb REAL, ps REAL,
     roe REAL, roa REAL,
@@ -69,7 +70,7 @@ class SQLiteStorage(Storage):
 
     def _migrate(self) -> None:
         """对已存在的旧库补加后来新增的列（CREATE TABLE IF NOT EXISTS 不会改表）。"""
-        wanted = {"fundamentals": [("industry", "TEXT")]}
+        wanted = {"fundamentals": [("industry", "TEXT"), ("ann_date", "TEXT")]}
         for table, cols in wanted.items():
             existing = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
             for name, typ in cols:
@@ -123,26 +124,31 @@ class SQLiteStorage(Storage):
     def upsert_fundamentals(self, df: pd.DataFrame) -> None:
         self._upsert("fundamentals", df, ["symbol", "date"])
 
-    def get_fundamentals(self, symbols=None) -> pd.DataFrame:
-        sql = "SELECT * FROM fundamentals"
-        params: list = []
-        if symbols:
-            placeholders = ",".join("?" * len(symbols))
-            sql += f" WHERE symbol IN ({placeholders})"
-            params = list(symbols)
-        return pd.read_sql(sql, self.conn, params=params)
+    def get_fundamentals(self, symbols=None, as_of: str | None = None) -> pd.DataFrame:
+        """as_of 给定时只返回**截至该日已披露**(ann_date <= as_of)的记录（防前视）。
+        ann_date 为空的记录在 PIT 模式下被排除（无法确认披露时点，不可用于历史）。"""
+        return self._select_pit("fundamentals", "ann_date", symbols, as_of)
 
     # ── features (AI 产出) ──
     def upsert_features(self, df: pd.DataFrame) -> None:
         self._upsert("features", df, ["symbol", "date"])
 
-    def get_features(self, symbols=None) -> pd.DataFrame:
-        sql = "SELECT * FROM features"
-        params: list = []
+    def get_features(self, symbols=None, as_of: str | None = None) -> pd.DataFrame:
+        """as_of 给定时只返回 as_of(可信起点) <= 该日的特征（防前视）。"""
+        return self._select_pit("features", "as_of", symbols, as_of)
+
+    def _select_pit(self, table: str, asof_col: str,
+                    symbols, as_of: str | None) -> pd.DataFrame:
+        sql = f"SELECT * FROM {table}"
+        conds, params = [], []
         if symbols:
-            placeholders = ",".join("?" * len(symbols))
-            sql += f" WHERE symbol IN ({placeholders})"
-            params = list(symbols)
+            conds.append(f"symbol IN ({','.join('?' * len(symbols))})")
+            params += list(symbols)
+        if as_of:
+            conds.append(f"{asof_col} IS NOT NULL AND {asof_col} <= ?")
+            params.append(as_of)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
         return pd.read_sql(sql, self.conn, params=params)
 
     # ── 内部：基于主键的 upsert ──

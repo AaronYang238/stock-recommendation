@@ -87,9 +87,11 @@ def meta() -> dict:
 # ── /api/candidates ───────────────────────────────────────
 def candidates(pe_max: float, roe_min: float, top: int,
                boards: list[str] | None = None,
-               statuses: list[str] | None = None) -> dict:
+               statuses: list[str] | None = None,
+               as_of: str | None = None) -> dict:
+    # as_of：point-in-time 截面（防前视）。缺省=实时（取最新已披露）。
     with _store() as (cfg, store):
-        cross = build_cross_section(store, cfg)
+        cross = build_cross_section(store, cfg, as_of=as_of)
     scored = score_factors(cross)
     spec = FilterSpec(
         name="api-screen",
@@ -111,6 +113,7 @@ def candidates(pe_max: float, roe_min: float, top: int,
         "count": int(len(result)),
         "board_options": board_opts,
         "status_options": status_opts,
+        "as_of": as_of,
     }
 
 
