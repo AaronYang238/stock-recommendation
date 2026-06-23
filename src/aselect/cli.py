@@ -86,6 +86,27 @@ def _screen(args):
     store.close()
 
 
+def _strategy(args):
+    """股票池级·walk-forward·多因子回测（含摩擦/涨跌停/基准/IC，PIT 防前视）。"""
+    from .runner import run_strategy_backtest
+    cfg = load_config()
+    store = get_storage(cfg)
+    rep = run_strategy_backtest(store, cfg, start=args.start, end=args.end,
+                                freq=args.freq, top_n=args.top)
+    print(f"\n[策略回测] 调仓 {args.freq} · 持仓 top{args.top} · "
+          f"股票池含退市/ST（防幸存者偏差）")
+    print(f"  调仓次数 {rep.n_rebalances} | 平均持仓 {rep.avg_positions} 只 | "
+          f"平均换手 {rep.avg_turnover:.2f}")
+    print(f"  总收益 {rep.total_return:.2%} | 年化 {rep.annual_return:.2%} | "
+          f"夏普 {rep.sharpe} | 最大回撤 {rep.max_drawdown:.2%}")
+    print(f"  基准收益 {rep.benchmark_return:.2%} | 超额 {rep.excess_return:.2%}")
+    print(f"  IC 均值 {rep.ic_mean} | ICIR {rep.ic_ir} | IC胜率 {rep.ic_win_rate:.0%}")
+    print(f"  期望值 {rep.expectancy:.4f}/期 | 盈亏比 {rep.profit_loss_ratio} | "
+          f"期胜率 {rep.win_rate:.0%}")
+    print(f"\n{cfg.disclaimer}")
+    store.close()
+
+
 def _backtest(args):
     cfg = load_config()
     store = get_storage(cfg)
@@ -120,6 +141,13 @@ def main():
     bt = sub.add_parser("backtest")
     bt.add_argument("symbol")
     bt.set_defaults(func=_backtest)
+
+    stg = sub.add_parser("strategy", help="股票池级·walk-forward·多因子回测")
+    stg.add_argument("--top", type=int, default=20)
+    stg.add_argument("--freq", default="M", help="调仓频率：M/W/Q 或整数交易日")
+    stg.add_argument("--start")
+    stg.add_argument("--end")
+    stg.set_defaults(func=_strategy)
 
     args = p.parse_args()
     args.func(args)

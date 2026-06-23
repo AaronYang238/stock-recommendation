@@ -61,3 +61,14 @@ def backtest(request, symbol: str):
 @api_view(["POST", "GET"])
 def report(request, symbol: str):
     return Response(services.ai_report(symbol))
+
+
+@api_view(["GET"])
+def strategy_backtest(request):
+    q = request.query_params
+    return Response(services.strategy_backtest(
+        top=_to_int(q.get("top"), 20),
+        freq=q.get("freq") or "M",
+        start=q.get("start") or None,
+        end=q.get("end") or None,
+    ))

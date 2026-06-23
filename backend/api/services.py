@@ -169,6 +169,34 @@ def backtest(symbol: str, fast: int = 5, slow: int = 20) -> dict:
     }
 
 
+# ── /api/strategy/backtest ────────────────────────────────
+def strategy_backtest(top: int = 20, freq: str = "M",
+                      start: str | None = None, end: str | None = None) -> dict:
+    from aselect.runner import run_strategy_backtest
+    with _store() as (cfg, store):
+        rep = run_strategy_backtest(store, cfg, start=start, end=end,
+                                    freq=freq, top_n=top)
+    eq, bc = rep.equity_curve, rep.benchmark_curve
+    bc = bc.reindex(eq.index)
+    curve = [{"date": pd.Timestamp(d).strftime("%Y-%m-%d"),
+              "equity": round(float(e), 4),
+              "benchmark": round(float(b), 4) if pd.notna(b) else None}
+             for d, e, b in zip(eq.index, eq.values, bc.values)]
+    return {
+        "params": {"top": top, "freq": freq, "start": start, "end": end},
+        "metrics": {
+            "total_return": rep.total_return, "annual_return": rep.annual_return,
+            "sharpe": rep.sharpe, "max_drawdown": rep.max_drawdown,
+            "benchmark_return": rep.benchmark_return, "excess_return": rep.excess_return,
+            "ic_mean": rep.ic_mean, "ic_ir": rep.ic_ir, "ic_win_rate": rep.ic_win_rate,
+            "win_rate": rep.win_rate, "profit_loss_ratio": rep.profit_loss_ratio,
+            "expectancy": rep.expectancy, "n_rebalances": rep.n_rebalances,
+            "avg_turnover": rep.avg_turnover, "avg_positions": rep.avg_positions,
+        },
+        "curve": curve,
+    }
+
+
 # ── /api/stocks/<symbol>/report （AI · RAG）───────────────
 def ai_report(symbol: str) -> dict:
     with _store() as (cfg, store):

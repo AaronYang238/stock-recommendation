@@ -72,11 +72,11 @@ def build_cross_section(store: Storage, config: Config,
                     .groupby("symbol", as_index=False).tail(1)
                     .reset_index(drop=True))
 
-    # 价格因子
+    # 价格因子（PIT：as_of 给定时只用 ≤as_of 的行情，否则动量/均线会偷看未来）
     adjust = config.datasource.get("adjust", "hfq")
     price_rows = []
     for sym in base["symbol"]:
-        daily = store.get_daily(sym, adjust)
+        daily = store.get_daily(sym, adjust, end=as_of)
         row = {"symbol": sym}
         if not daily.empty:
             row.update(add_price_factors(daily))

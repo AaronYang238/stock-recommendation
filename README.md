@@ -71,8 +71,9 @@ npm run dev                                     # 打开 http://localhost:9090
 
 - **个股查询**：输入任意股票代码 + 起止日期，查看指定区间内的 **K 线（蜡烛图，红涨绿跌）+ MA20/MA60**。
 - **候选股**：表格带板块/状态分类与表头 ⓘ 术语提示，点选个股看 K 线、回测与 AI 报告。
+- **策略回测**：股票池级 walk-forward 多因子回测，设持仓数/调仓频率，看策略净值 vs 基准曲线与 IC/超额/夏普/盈亏比等指标。
 
-API 端点：`/api/meta`、`/api/candidates`、`/api/stocks/<code>/daily?start=&end=`（区间 K 线）、`/api/stocks/<code>/backtest|report`。
+API 端点：`/api/meta`、`/api/candidates`、`/api/stocks/<code>/daily?start=&end=`（区间 K 线）、`/api/stocks/<code>/backtest|report`、`/api/strategy/backtest`。
 
 ## 启用 AI（可选，默认关闭）
 
@@ -104,6 +105,7 @@ pytest          # 含：核心无 LLM 依赖、优雅降级、可复现、防注
 - [x] 个股查询：按代码 + 起止日期查指定区间 K 线（蜡烛图 + MA20/MA60），`daily` 接口支持 `start/end`
 - [x] 因子中性化：去极值 + Z-score + 行业/市值中性（OLS 残差），`total_score` 为中性化 Z 值
 - [x] Point-in-time 防前视：基本面/特征带披露日 `ann_date`，截面按 `as_of` 只取已披露数据（`candidates` 接口支持 `as_of`）
+- [x] 股票池级 walk-forward 多因子回测：含 A 股摩擦/T+1/涨跌停无法成交/基准对比，报告 IC·ICIR·夏普·盈亏比·期望值·超额；逐期 PIT 防前视、池含退市/ST（`strategy` 命令 + `/api/strategy/backtest`）
 - [ ] 监控预警推送（邮件/Telegram/企业微信）— 待接
 - [ ] 6. NL 筛选与 AI 报告接入真实 Key 联调
 - [ ] 接入点①：舆情/公告 情绪与事件因子（爬取/拉取财经文本 → AI 落地为因子）— 见下方「规划」，**暂不实现**

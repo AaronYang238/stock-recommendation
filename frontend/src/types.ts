@@ -72,6 +72,36 @@ export interface ReportResponse {
   ai_enabled: boolean
 }
 
+export interface StrategyMetrics {
+  total_return: number
+  annual_return: number
+  sharpe: number
+  max_drawdown: number
+  benchmark_return: number
+  excess_return: number
+  ic_mean: number
+  ic_ir: number
+  ic_win_rate: number
+  win_rate: number
+  profit_loss_ratio: number
+  expectancy: number
+  n_rebalances: number
+  avg_turnover: number
+  avg_positions: number
+}
+
+export interface StrategyCurvePoint {
+  date: string
+  equity: number
+  benchmark: number | null
+}
+
+export interface StrategyBacktestResponse {
+  params: { top: number; freq: string; start: string | null; end: string | null }
+  metrics: StrategyMetrics
+  curve: StrategyCurvePoint[]
+}
+
 export interface Filters {
   pe_max: number
   roe_min: number

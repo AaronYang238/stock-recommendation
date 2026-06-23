@@ -121,7 +121,9 @@ table.candidates { width: 100%; border-collapse: collapse; font-size: 13px; }
 .query { margin-top: 0; }
 .query-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .query-form label { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 4px; }
-.query-form input[type="date"] { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.query-form input[type="date"], .query-form input[type="number"], .query-form select {
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+}
 .q-code { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; width: 150px; }
 .err { color: var(--risk); }
 

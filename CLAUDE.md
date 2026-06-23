@@ -82,7 +82,8 @@ app/api 输出端被调用,**不得被 engine 引用**(有 `test_no_llm_in_core`
 python -m aselect.cli seed              # 离线合成数据填库(不联网、可复现)
 python -m aselect.cli update --limit N  # 收盘后增量拉取真实数据(重试+容错)
 python -m aselect.cli screen            # 多因子打分 + 条件筛选
-python -m aselect.cli backtest <code>   # 单只回测(walk-forward 股票池级回测待实现)
+python -m aselect.cli backtest <code>   # 单只回测(MA 交叉)
+python -m aselect.cli strategy --top 20 --freq M  # 股票池级 walk-forward 多因子回测(IC/超额/摩擦/涨跌停)
 python backend/manage.py runserver 8000 # 后端 API
 cd frontend && npm run dev              # 前端(http://localhost:9090)
 pytest                                  # 测试

@@ -1,7 +1,7 @@
 // 后端 API 调用封装。开发态经 Vite 代理 /api → Django:8000。
 import type {
   Meta, CandidatesResponse, DailyResponse, BacktestResponse,
-  ReportResponse, Filters,
+  ReportResponse, Filters, StrategyBacktestResponse,
 } from './types'
 
 async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
@@ -43,4 +43,11 @@ export function fetchBacktest(symbol: string): Promise<BacktestResponse> {
 
 export function fetchReport(symbol: string): Promise<ReportResponse> {
   return getJSON<ReportResponse>(`/api/stocks/${symbol}/report/`, { method: 'POST' })
+}
+
+export function fetchStrategyBacktest(
+  top: number, freq: string,
+): Promise<StrategyBacktestResponse> {
+  const p = new URLSearchParams({ top: String(top), freq })
+  return getJSON<StrategyBacktestResponse>(`/api/strategy/backtest/?${p.toString()}`)
 }
