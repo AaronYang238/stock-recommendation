@@ -45,7 +45,9 @@ def candidates(request):
 
 @api_view(["GET"])
 def daily(request, symbol: str):
-    return Response(services.daily_series(symbol))
+    q = request.query_params
+    return Response(services.daily_series(
+        symbol, start=q.get("start") or None, end=q.get("end") or None))
 
 
 @api_view(["GET"])

@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react'
-import {
-  LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, Legend,
-} from 'recharts'
 import type { Candidate, BacktestResponse, DailyResponse, ReportResponse } from '../types'
 import { fetchBacktest, fetchDaily, fetchReport } from '../api'
+import PriceChart from './PriceChart'
 import Term from './Term'
 
 interface Props {
@@ -61,23 +59,8 @@ export default function StockDetail({ symbol, candidate }: Props) {
       <div className="detail-grid">
         <div className="panel">
           <h4><Term label="K 线 / 均线" /> （<Term label="后复权" />）</h4>
-          {daily && daily.points.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={daily.points} margin={{ top: 8, right: 12, bottom: 0, left: -8 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
-                <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
-                <Tooltip />
-                <Legend />
-                <Line type="monotone" dataKey="close" name="收盘" stroke="#2e9b8f"
-                  dot={false} strokeWidth={1.5} isAnimationActive={false} />
-                <Line type="monotone" dataKey="ma20" name="MA20" stroke="#e8a33d"
-                  dot={false} strokeWidth={1} isAnimationActive={false} />
-                <Line type="monotone" dataKey="ma60" name="MA60" stroke="#7b8cde"
-                  dot={false} strokeWidth={1} isAnimationActive={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          ) : <div className="muted">无行情数据</div>}
+          {daily ? <PriceChart points={daily.points} />
+                 : <div className="muted">加载中…</div>}
         </div>
 
         <div className="panel">

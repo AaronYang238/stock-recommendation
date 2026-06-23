@@ -36,6 +36,9 @@ export interface CandidatesResponse {
 
 export interface DailyPoint {
   date: string
+  open: number | null
+  high: number | null
+  low: number | null
   close: number | null
   ma20: number | null
   ma60: number | null
@@ -43,7 +46,11 @@ export interface DailyPoint {
 
 export interface DailyResponse {
   symbol: string
+  name?: string | null
   adjust?: string
+  start?: string | null
+  end?: string | null
+  available?: { start: string; end: string } | null
   points: DailyPoint[]
 }
 

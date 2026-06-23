@@ -115,16 +115,38 @@ def candidates(pe_max: float, roe_min: float, top: int,
 
 
 # ── /api/stocks/<symbol>/daily ────────────────────────────
-def daily_series(symbol: str) -> dict:
+def daily_series(symbol: str, start: str | None = None,
+                 end: str | None = None) -> dict:
+    """指定区间 [start, end] 的日 K + 均线。
+
+    指标在全量序列上计算后再按区间切片，保证窗口起点的 MA20/MA60 也正确
+    （否则区间头部会因缺少前置数据而为 NaN）。
+    """
     with _store() as (cfg, store):
         adjust = cfg.datasource.get("adjust", "hfq")
+        name = _symbol_name(store, symbol)
         daily = store.get_daily(symbol, adjust)
     if daily.empty:
-        return {"symbol": symbol, "points": []}
+        return {"symbol": symbol, "name": name, "points": [], "available": None}
     ind = add_indicators(daily)
     ind["date"] = pd.to_datetime(ind["date"]).dt.strftime("%Y-%m-%d")
-    cols = ["date", "close", "ma20", "ma60"]
-    return {"symbol": symbol, "adjust": adjust, "points": _records(ind, cols)}
+    available = {"start": ind["date"].iloc[0], "end": ind["date"].iloc[-1]}
+    if start:
+        ind = ind[ind["date"] >= start]
+    if end:
+        ind = ind[ind["date"] <= end]
+    cols = ["date", "open", "high", "low", "close", "ma20", "ma60"]
+    return {
+        "symbol": symbol, "name": name, "adjust": adjust,
+        "start": start, "end": end, "available": available,
+        "points": _records(ind, cols),
+    }
+
+
+def _symbol_name(store, symbol: str) -> str | None:
+    df = store.get_symbols()
+    hit = df[df["symbol"] == symbol]
+    return None if hit.empty else hit["name"].iloc[0]
 
 
 # ── /api/stocks/<symbol>/backtest ─────────────────────────

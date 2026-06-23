@@ -27,8 +27,14 @@ export function fetchCandidates(f: Filters): Promise<CandidatesResponse> {
   return getJSON<CandidatesResponse>(`/api/candidates/?${p.toString()}`)
 }
 
-export function fetchDaily(symbol: string): Promise<DailyResponse> {
-  return getJSON<DailyResponse>(`/api/stocks/${symbol}/daily/`)
+export function fetchDaily(
+  symbol: string, start?: string, end?: string,
+): Promise<DailyResponse> {
+  const p = new URLSearchParams()
+  if (start) p.set('start', start)
+  if (end) p.set('end', end)
+  const qs = p.toString()
+  return getJSON<DailyResponse>(`/api/stocks/${symbol}/daily/${qs ? `?${qs}` : ''}`)
 }
 
 export function fetchBacktest(symbol: string): Promise<BacktestResponse> {

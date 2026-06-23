@@ -67,8 +67,12 @@ npm install
 npm run dev                                     # 打开 http://localhost:9090
 ```
 
-打开 `http://localhost:9090`：候选股表格带板块/状态分类与表头 ⓘ 术语提示，点选个股看 K 线、回测与 AI 报告。
-API 端点：`/api/meta`、`/api/candidates`、`/api/stocks/<code>/daily|backtest|report`。
+打开 `http://localhost:9090`：
+
+- **个股查询**：输入任意股票代码 + 起止日期，查看指定区间内的 **K 线（蜡烛图，红涨绿跌）+ MA20/MA60**。
+- **候选股**：表格带板块/状态分类与表头 ⓘ 术语提示，点选个股看 K 线、回测与 AI 报告。
+
+API 端点：`/api/meta`、`/api/candidates`、`/api/stocks/<code>/daily?start=&end=`（区间 K 线）、`/api/stocks/<code>/backtest|report`。
 
 ## 启用 AI（可选，默认关闭）
 
@@ -97,6 +101,7 @@ pytest          # 含：核心无 LLM 依赖、优雅降级、可复现、防注
 - [x] 荐股板块标注：按代码前缀标注主板/创业板/科创板/北交所（CLI 与 Web 均显示，可按板块筛选）
 - [x] Web 术语悬浮解释：专有名词右上角 ⓘ，悬停显示通俗描述（词典见 `aselect.glossary`）
 - [x] 服务化：Django + DRF 后端 + React/Vite/TS 前端，替代 Streamlit（核心 `aselect` 不变）
+- [x] 个股查询：按代码 + 起止日期查指定区间 K 线（蜡烛图 + MA20/MA60），`daily` 接口支持 `start/end`
 - [ ] 监控预警推送（邮件/Telegram/企业微信）— 待接
 - [ ] 6. NL 筛选与 AI 报告接入真实 Key 联调
 - [ ] 接入点①：舆情/公告 情绪与事件因子（爬取/拉取财经文本 → AI 落地为因子）— 见下方「规划」，**暂不实现**

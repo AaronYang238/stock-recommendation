@@ -6,6 +6,7 @@ import StatusBar from './components/StatusBar'
 import FiltersPanel from './components/Filters'
 import CandidateTable from './components/CandidateTable'
 import StockDetail from './components/StockDetail'
+import StockQuery from './components/StockQuery'
 
 const DEFAULT_FILTERS: Filters = {
   pe_max: 30, roe_min: 10, top: 20, boards: [], statuses: [],
@@ -83,6 +84,8 @@ export default function App() {
           />
 
           <main className="content">
+            <StockQuery initialSymbol={selected ?? undefined} />
+
             <h3>候选股（命中 {data?.count ?? 0} 只）</h3>
             <p className="muted small">
               分类维度：板块（主板/创业板/科创板/北交所） + 状态（正常/ST/退市）。
