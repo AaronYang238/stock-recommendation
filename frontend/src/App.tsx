@@ -8,6 +8,7 @@ import CandidateTable from './components/CandidateTable'
 import StockDetail from './components/StockDetail'
 import StockQuery from './components/StockQuery'
 import StrategyBacktest from './components/StrategyBacktest'
+import ResearchPanel from './components/ResearchPanel'
 
 const DEFAULT_FILTERS: Filters = {
   pe_max: 30, roe_min: 10, top: 20, boards: [], statuses: [],
@@ -103,6 +104,8 @@ export default function App() {
             )}
 
             <StrategyBacktest />
+
+            <ResearchPanel />
           </main>
         </div>
 

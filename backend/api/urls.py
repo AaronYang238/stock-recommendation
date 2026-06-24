@@ -9,4 +9,5 @@ urlpatterns = [
     path("stocks/<str:symbol>/backtest/", views.backtest),
     path("stocks/<str:symbol>/report/", views.report),
     path("strategy/backtest/", views.strategy_backtest),
+    path("research/report/", views.research_report),
 ]

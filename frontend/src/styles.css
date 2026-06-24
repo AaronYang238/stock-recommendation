@@ -126,6 +126,8 @@ table.candidates { width: 100%; border-collapse: collapse; font-size: 13px; }
 }
 .q-code { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; width: 150px; }
 .err { color: var(--risk); }
+.oos-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 760px) { .oos-cols { grid-template-columns: 1fr; } }
 
 .muted { color: var(--muted); }
 .small { font-size: 12px; }

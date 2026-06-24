@@ -127,6 +127,7 @@ pytest          # 含：核心无 LLM 依赖、优雅降级、可复现、防注
 - [x] 股票池级 walk-forward 多因子回测：含 A 股摩擦/T+1/涨跌停无法成交/基准对比，报告 IC·ICIR·夏普·盈亏比·期望值·超额；逐期 PIT 防前视、池含退市/ST（`strategy` 命令 + `/api/strategy/backtest`）
 - [x] 真实财务/行业/披露日接入：akshare 行业（板块成分→symbol 映射）；**tushare 适配器补全**（`daily_basic` 估值 + `fina_indicator` 的 ROE/毛利率/同比 + 公告日 `ann_date`），为被封网环境提供可用数据路径与真实 PIT 财务
 - [x] 数据自动化（整改阶段一）：`sync` 全量同步（列表→日线→基本面+行业→**真实沪深300基准入库**）；APScheduler 调度守护收盘后自动跑；tushare 适配器改批量+限频+退市；`/api/meta` 显示数据新鲜度
+- [x] 收益验证（整改阶段二）：单因子 walk-forward IC 研究（IC 均值/ICIR/IC胜率/分层多空/衰减，`factor-ic`）；按 IC 聚合类别权重；**样本外(hold-out)纪律**（`strategy --oos`：训练段拟合权重、样本外只测一次）；`/api/research/report` + 前端「因子/策略研究」面板
 - [ ] 监控预警推送（邮件/Telegram/企业微信）— 待接
 - [ ] 6. NL 筛选与 AI 报告接入真实 Key 联调
 - [ ] 接入点①：舆情/公告 情绪与事件因子（爬取/拉取财经文本 → AI 落地为因子）— 见下方「规划」，**暂不实现**

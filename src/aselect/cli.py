@@ -138,11 +138,45 @@ def _schedule(args):
     sched_main()
 
 
-def _strategy(args):
-    """股票池级·walk-forward·多因子回测（含摩擦/涨跌停/基准/IC，PIT 防前视）。"""
-    from .runner import run_strategy_backtest
+def _factor_ic(args):
+    """单因子 walk-forward IC 研究（CLAUDE：新因子先单独验 IC 再纳入加权）。"""
+    from .runner import run_factor_research
     cfg = load_config()
     store = get_storage(cfg)
+    reps = run_factor_research(store, cfg, freq=args.freq, start=args.start, end=args.end)
+    if not reps:
+        print("数据不足，先 seed/sync 后再试。")
+        store.close(); return
+    print("\n单因子 walk-forward IC（|IC|稳定 0.03~0.05 即好因子，ICIR>0.5 佳）：")
+    print(f"{'因子':<14}{'IC均值':>8}{'ICIR':>8}{'IC胜率':>8}{'分层多空':>10}{'样本':>6}")
+    for name, r in sorted(reps.items(), key=lambda kv: -abs(kv[1].ic_mean)):
+        print(f"{name:<14}{r.ic_mean:>8}{r.icir:>8}{r.ic_win_rate:>8.0%}"
+              f"{r.quantile_spread:>10}{r.n:>6}")
+    print(f"\n{cfg.disclaimer}")
+    store.close()
+
+
+def _strategy(args):
+    """股票池级·walk-forward·多因子回测（含摩擦/涨跌停/基准/IC，PIT 防前视）。
+    --oos 给定时走样本外纪律：训练段拟合 IC 权重、只在样本外段测一次。"""
+    from .runner import run_strategy_backtest, run_validated_strategy
+    cfg = load_config()
+    store = get_storage(cfg)
+
+    if args.oos:
+        v = run_validated_strategy(store, cfg, freq=args.freq, top_n=args.top,
+                                   oos_split=args.oos)
+        if "error" in v:
+            print(v["error"]); store.close(); return
+        w = ", ".join(f"{k}:{x:.2f}" for k, x in v["weights"].items())
+        print(f"\n[样本外验证] 切分日 {v['split_date']} | 训练段拟合 IC 权重: {w}")
+        for tag, rep in (("训练段", v["train"]), ("样本外(只测一次)", v["oos"])):
+            print(f"  [{tag}] 总收益 {rep.total_return:.2%} | 年化 {rep.annual_return:.2%}"
+                  f" | 夏普 {rep.sharpe} | 超额 {rep.excess_return:.2%}"
+                  f" | IC {rep.ic_mean} | 盈亏比 {rep.profit_loss_ratio}")
+        print(f"\n{cfg.disclaimer}")
+        store.close(); return
+
     rep = run_strategy_backtest(store, cfg, start=args.start, end=args.end,
                                 freq=args.freq, top_n=args.top)
     print(f"\n[策略回测] 调仓 {args.freq} · 持仓 top{args.top} · "
@@ -200,11 +234,19 @@ def main():
 
     sub.add_parser("schedule", help="启动调度守护（收盘后自动 sync）").set_defaults(func=_schedule)
 
+    fic = sub.add_parser("factor-ic", help="单因子 walk-forward IC 研究")
+    fic.add_argument("--freq", default="M")
+    fic.add_argument("--start")
+    fic.add_argument("--end")
+    fic.set_defaults(func=_factor_ic)
+
     stg = sub.add_parser("strategy", help="股票池级·walk-forward·多因子回测")
     stg.add_argument("--top", type=int, default=20)
     stg.add_argument("--freq", default="M", help="调仓频率：M/W/Q 或整数交易日")
     stg.add_argument("--start")
     stg.add_argument("--end")
+    stg.add_argument("--oos", type=float, default=0.0,
+                     help="样本外比例(如0.7)：训练段拟合IC权重，样本外段只测一次")
     stg.set_defaults(func=_strategy)
 
     args = p.parse_args()

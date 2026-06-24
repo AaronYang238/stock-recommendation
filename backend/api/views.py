@@ -64,6 +64,13 @@ def report(request, symbol: str):
 
 
 @api_view(["GET"])
+def research_report(request):
+    q = request.query_params
+    return Response(services.research_report(
+        freq=q.get("freq") or "M", top=_to_int(q.get("top"), 20)))
+
+
+@api_view(["GET"])
 def strategy_backtest(request):
     q = request.query_params
     return Response(services.strategy_backtest(

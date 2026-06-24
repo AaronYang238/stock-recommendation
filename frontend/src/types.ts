@@ -91,6 +91,39 @@ export interface StrategyMetrics {
   avg_positions: number
 }
 
+export interface FactorIC {
+  name: string
+  ic_mean: number
+  icir: number
+  ic_win_rate: number
+  quantile_spread: number
+  n: number
+  decay: number[]
+}
+
+export interface ValidatedMetrics {
+  total_return: number
+  annual_return: number
+  sharpe: number
+  max_drawdown: number
+  excess_return: number
+  ic_mean: number
+  profit_loss_ratio: number
+  n_rebalances: number
+}
+
+export interface ResearchReport {
+  freq: string
+  factors: FactorIC[]
+  validated: {
+    split_date: string
+    weights: Record<string, number>
+    train: ValidatedMetrics
+    oos: ValidatedMetrics
+  } | null
+  note?: string | null
+}
+
 export interface StrategyCurvePoint {
   date: string
   equity: number

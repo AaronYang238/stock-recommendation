@@ -172,6 +172,31 @@ def backtest(symbol: str, fast: int = 5, slow: int = 20) -> dict:
     }
 
 
+# ── /api/research/report （阶段二：因子 IC + 样本外验证）──
+def research_report(freq: str = "M", top: int = 20) -> dict:
+    from aselect.runner import run_factor_research, run_validated_strategy
+    with _store() as (cfg, store):
+        reps = run_factor_research(store, cfg, freq=freq)
+        val = run_validated_strategy(store, cfg, freq=freq, top_n=top)
+    factors = [{"name": n, "ic_mean": r.ic_mean, "icir": r.icir,
+                "ic_win_rate": r.ic_win_rate, "quantile_spread": r.quantile_spread,
+                "n": r.n, "decay": r.decay}
+               for n, r in sorted(reps.items(), key=lambda kv: -abs(kv[1].ic_mean))]
+
+    def _m(rep) -> dict:
+        return {"total_return": rep.total_return, "annual_return": rep.annual_return,
+                "sharpe": rep.sharpe, "max_drawdown": rep.max_drawdown,
+                "excess_return": rep.excess_return, "ic_mean": rep.ic_mean,
+                "profit_loss_ratio": rep.profit_loss_ratio,
+                "n_rebalances": rep.n_rebalances}
+    validated = None if "error" in val else {
+        "split_date": val["split_date"], "weights": val["weights"],
+        "train": _m(val["train"]), "oos": _m(val["oos"]),
+    }
+    return {"freq": freq, "factors": factors, "validated": validated,
+            "note": val.get("error")}
+
+
 # ── /api/strategy/backtest ────────────────────────────────
 def strategy_backtest(top: int = 20, freq: str = "M",
                       start: str | None = None, end: str | None = None) -> dict:
