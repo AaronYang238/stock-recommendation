@@ -19,6 +19,9 @@ def _build(name: str, config: Config) -> DataSource:
     if name == "tushare":
         from .tushare_source import TushareSource
         return TushareSource(retry=retry, retry_backoff_s=backoff)
+    if name == "baostock":
+        from .baostock_source import BaostockSource
+        return BaostockSource(retry=retry, retry_backoff_s=backoff)
     if name == "synthetic":
         from .synthetic_source import SyntheticSource
         return SyntheticSource()

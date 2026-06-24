@@ -7,8 +7,8 @@ app:
 
 # ── 数据源（适配器化，主源失效可回退备用源）──────────────────
 datasource:
-  primary: akshare        # akshare（免费无 Key）
-  fallback: tushare       # 需积分；Key 走环境变量 TUSHARE_TOKEN
+  primary: akshare        # akshare(免费无Key) | baostock(免费有财务,不被封) | tushare(需积分)
+  fallback: baostock      # 主源失效时回退；baostock 免费、含真实财务+披露日
   adjust: hfq             # 复权方式：none | qfq(前复权) | hfq(后复权)；回测默认后复权
   retry: 3
   retry_backoff_s: 2

@@ -44,7 +44,7 @@
 
 | 用途 | 选型 |
 |---|---|
-| 数据源 | akshare(主,免费) / tushare(备,积分) |
+| 数据源 | akshare(主,免费) / baostock(免费,含财务+披露日,不被封) / tushare(备,积分) |
 | 计算/指标 | pandas + pandas-ta(不可用时回退经测试的向量化实现) |
 | 回测 | backtrader(不可用时回退向量化无前视简版) |
 | 存储 | SQLite(Parquet 规划中) |
