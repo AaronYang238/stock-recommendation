@@ -9,6 +9,8 @@ export default function StatusBar({ meta }: { meta: Meta }) {
       hint: 'pandas-ta 不可用时回退到经测试的向量化实现' },
     { label: 'AI', value: aiText,
       hint: 'AI 为热插拔模块；禁用或缺 Key 时降级，确定性核心照常运行' },
+    { label: '数据更新', value: meta.data?.last_daily_date ?? '—',
+      hint: `最新日线日期；有财务数据 ${meta.data?.n_with_fundamentals ?? 0} 只。收盘后由调度自动同步。` },
   ]
   return (
     <div className="statusbar">

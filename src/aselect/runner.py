@@ -53,7 +53,7 @@ def run_strategy_backtest(
         scores[t] = scored.set_index("symbol")["total_score"]
 
     if benchmark_prices is None:
-        benchmark_prices = _equal_weight_benchmark(panel)        # 缺基准时用等权全市场代理
+        benchmark_prices = _load_benchmark(store, config, panel)
     bench = benchmark_prices.reindex(panel.index).ffill()
     return simulate(panel, list(schedule), selections, scores, bench, config.backtest)
 
@@ -103,6 +103,18 @@ def _tradable(panel: pd.DataFrame, t, limit_pct: float) -> set:
             continue
         out.add(sym)
     return out
+
+
+def _load_benchmark(store: Storage, config: Config, panel: pd.DataFrame) -> pd.Series:
+    """优先用库里存的真实基准指数（如沪深300）；缺失则退化为等权全市场代理。"""
+    code = str(config.backtest.get("benchmark", "")).strip()
+    if code:
+        idx = store.get_index(code)
+        if idx is not None and not idx.empty:
+            s = idx.set_index(pd.to_datetime(idx["date"]))["close"].sort_index()
+            if len(s) >= 2:
+                return s
+    return _equal_weight_benchmark(panel)
 
 
 def _equal_weight_benchmark(panel: pd.DataFrame) -> pd.Series:

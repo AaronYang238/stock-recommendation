@@ -14,7 +14,9 @@ from .base import DataSource
 class TushareSource(DataSource):
     name = "tushare"
 
-    def __init__(self, retry: int = 3, retry_backoff_s: float = 2.0):
+    def __init__(self, retry: int = 3, retry_backoff_s: float = 2.0,
+                 min_interval_s: float = 0.31):
+        import time as _t
         import tushare as ts  # 延迟导入
         token = os.environ.get("TUSHARE_TOKEN")
         if not token:
@@ -23,32 +25,62 @@ class TushareSource(DataSource):
         self.pro = ts.pro_api()
         self.retry = retry
         self.backoff = retry_backoff_s
+        self._min_interval = min_interval_s   # 限频：约 ≤200 次/分
+        self._last_call = 0.0
+        self._t = _t
+
+    def _call(self, api: str, **kwargs):
+        """限频 + 重试地调用 tushare pro 接口。"""
+        for i in range(max(1, self.retry)):
+            wait = self._min_interval - (self._t.time() - self._last_call)
+            if wait > 0:
+                self._t.sleep(wait)
+            try:
+                self._last_call = self._t.time()
+                return getattr(self.pro, api)(**kwargs)
+            except Exception:  # noqa: BLE001
+                if i == self.retry - 1:
+                    raise
+                self._t.sleep(self.backoff * (i + 1))
 
     def list_symbols(self) -> pd.DataFrame:
-        df = self.pro.stock_basic(exchange="", list_status="L",
-                                  fields="ts_code,name,exchange,list_date,industry")
-        df = df.rename(columns={"ts_code": "symbol"})
-        df["symbol"] = df["symbol"].str.split(".").str[0]
-        df["delist_date"] = None
-        df["status"] = "L"
-        self._industry_cache = dict(zip(df["symbol"], df.get("industry", "")))
-        return df[["symbol", "name", "exchange", "list_date", "delist_date", "status"]]
+        from ..data.symbols import merge_symbols
+
+        live = self._call("stock_basic", exchange="", list_status="L",
+                          fields="ts_code,name,exchange,list_date,industry")
+        live = live.rename(columns={"ts_code": "symbol"})
+        live["symbol"] = live["symbol"].str.split(".").str[0]
+        self._industry_cache = dict(zip(live["symbol"], live.get("industry", "")))
+        live["status"] = "L"
+        live["delist_date"] = None
+
+        # 退市标的（防幸存者偏差）
+        try:
+            dead = self._call("stock_basic", exchange="", list_status="D",
+                              fields="ts_code,name,exchange,list_date,delist_date")
+            dead = dead.rename(columns={"ts_code": "symbol"})
+            dead["symbol"] = dead["symbol"].str.split(".").str[0]
+            dead["status"] = "D"
+        except Exception:  # noqa: BLE001
+            dead = None
+        cols = ["symbol", "name", "exchange", "list_date", "delist_date", "status"]
+        return merge_symbols(live[cols], dead[cols] if dead is not None else None)
 
     def industry_map(self) -> dict[str, str]:
         """tushare stock_basic 自带申万行业字段，直接取用。"""
         cache = getattr(self, "_industry_cache", None)
         if cache:
             return {k: v for k, v in cache.items() if v}
-        df = self.pro.stock_basic(exchange="", list_status="L",
-                                  fields="ts_code,industry")
+        df = self._call("stock_basic", exchange="", list_status="L",
+                        fields="ts_code,industry")
         df["symbol"] = df["ts_code"].str.split(".").str[0]
         return {r.symbol: r.industry for r in df.itertuples() if r.industry}
 
     def daily(self, symbol, adjust, start=None, end=None) -> pd.DataFrame:
         ts_code = self._to_ts_code(symbol)
-        df = self.pro.daily(ts_code=ts_code,
-                            start_date=(start or "").replace("-", ""),
-                            end_date=(end or "").replace("-", ""))
+        df = self._call("daily", ts_code=ts_code,
+                        start_date=(start or "").replace("-", ""),
+                        end_date=(end or "").replace("-", ""))
         if df is None or df.empty:
             return pd.DataFrame(columns=["date", "open", "high", "low",
                                          "close", "volume", "amount"])
@@ -57,37 +89,25 @@ class TushareSource(DataSource):
         return df[["date", "open", "high", "low", "close", "volume", "amount"]].iloc[::-1]
 
     def fundamentals(self, symbols=None) -> pd.DataFrame:
-        """估值(daily_basic 最新) + 财务指标(fina_indicator 最新一期，含披露日 ann_date)。
+        """估值(daily_basic 全市场一日批量) + 财务(fina_indicator 逐只最新一期，含披露日)。
 
-        逐只拉取，适配 `update --limit N` 的批量；单只失败跳过。
-        - 估值 pe/pb/ps/total_mv 为价格快照（按交易日变化）。
-        - roe/毛利率/负债率/营收同比/净利同比 来自财报，date=报告期、ann_date=披露日，
-          供 point-in-time 对齐（铁律2）。
+        - 估值 pe/pb/ps/total_mv：用最近交易日的 `daily_basic` **一次拉全市场**再按 symbol 取，
+          避免逐只调用被限频（B1 痛点）。
+        - roe/毛利率/负债率/营收·净利同比：`fina_indicator` 逐只最新一期，date=报告期、
+          ann_date=披露日 → 供 point-in-time 对齐（铁律2）。逐只调用已限频+重试。
         """
         if not symbols:
             return pd.DataFrame()
         imap = self.industry_map()
+        valuation = self._latest_valuation()           # symbol -> {pe,pb,ps,total_mv}
         rows = []
         for sym in symbols:
-            ts_code = self._to_ts_code(sym)
             row = {"symbol": sym, "industry": imap.get(sym)}
+            row.update(valuation.get(sym, {}))
             try:
-                db = self.pro.daily_basic(
-                    ts_code=ts_code,
-                    fields="trade_date,pe,pb,ps,total_mv")
-                if db is not None and not db.empty:
-                    last = db.sort_values("trade_date").iloc[-1]
-                    row.update(pe=_f(last.get("pe")), pb=_f(last.get("pb")),
-                               ps=_f(last.get("ps")),
-                               total_mv=_f(last.get("total_mv")) * 1e4
-                               if last.get("total_mv") is not None else None)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                fi = self.pro.fina_indicator(
-                    ts_code=ts_code,
-                    fields="end_date,ann_date,roe,roa,grossprofit_margin,"
-                           "debt_to_assets,or_yoy,netprofit_yoy")
+                fi = self._call("fina_indicator", ts_code=self._to_ts_code(sym),
+                                fields="end_date,ann_date,roe,roa,grossprofit_margin,"
+                                       "debt_to_assets,or_yoy,netprofit_yoy")
                 if fi is not None and not fi.empty:
                     f = fi.sort_values("end_date").iloc[-1]
                     row.update(
@@ -102,6 +122,25 @@ class TushareSource(DataSource):
             row.setdefault("ann_date", row["date"])
             rows.append(row)
         return pd.DataFrame(rows)
+
+    def _latest_valuation(self) -> dict[str, dict]:
+        """取最近一个交易日的全市场估值（daily_basic 单次调用）。"""
+        for back in range(0, 10):
+            d = (pd.Timestamp.today() - pd.Timedelta(days=back)).strftime("%Y%m%d")
+            try:
+                df = self._call("daily_basic", trade_date=d,
+                                fields="ts_code,pe,pb,ps,total_mv")
+            except Exception:  # noqa: BLE001
+                continue
+            if df is not None and not df.empty:
+                df["symbol"] = df["ts_code"].str.split(".").str[0]
+                out = {}
+                for r in df.itertuples():
+                    tmv = _f(r.total_mv)
+                    out[r.symbol] = {"pe": _f(r.pe), "pb": _f(r.pb), "ps": _f(r.ps),
+                                     "total_mv": tmv * 1e4 if tmv is not None else None}
+                return out
+        return {}
 
     @staticmethod
     def _to_ts_code(symbol: str) -> str:

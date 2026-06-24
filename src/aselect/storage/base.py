@@ -50,5 +50,16 @@ class Storage(ABC):
     def get_features(self, symbols: list[str] | None = None,
                      as_of: str | None = None) -> pd.DataFrame: ...
 
+    # ── 指数日线 / 数据状态（可选实现） ──
+    def upsert_index(self, code: str, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def get_index(self, code: str, start: str | None = None,
+                  end: str | None = None) -> pd.DataFrame:
+        return pd.DataFrame(columns=["date", "close"])
+
+    def data_status(self) -> dict:
+        return {}
+
     def close(self) -> None:  # 可选实现
         pass

@@ -50,7 +50,7 @@
 | 存储 | SQLite(Parquet 规划中) |
 | 后端 | Django + DRF(REST 外壳，只读核心，不含业务 ORM) |
 | 前端 | React + Vite + TypeScript(单页，端口 9090，/api 代理到 :8000) |
-| 调度 | APScheduler / cron(尚未接入) |
+| 调度 | APScheduler / cron(收盘后自动 sync，已接入) |
 | AI | 兼容 OpenAI/Anthropic 协议,适配器 + 工厂模式 |
 
 ---
@@ -81,6 +81,8 @@ app/api 输出端被调用,**不得被 engine 引用**(有 `test_no_llm_in_core`
 ```bash
 python -m aselect.cli seed              # 离线合成数据填库(不联网、可复现)
 python -m aselect.cli update --limit N  # 收盘后增量拉取真实数据(重试+容错)
+python -m aselect.cli sync              # 全量同步(列表→日线→基本面+行业→基准指数)
+python -m aselect.scheduler             # 调度守护：交易日收盘后自动 sync
 python -m aselect.cli screen            # 多因子打分 + 条件筛选
 python -m aselect.cli backtest <code>   # 单只回测(MA 交叉)
 python -m aselect.cli strategy --top 20 --freq M  # 股票池级 walk-forward 多因子回测(IC/超额/摩擦/涨跌停)

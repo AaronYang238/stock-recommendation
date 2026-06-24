@@ -11,7 +11,8 @@ import argparse
 import logging
 
 from .config import load_config
-from .data import build_cross_section, update_daily, update_symbols
+from .data import build_cross_section, update_daily, update_index, update_symbols
+from .data.symbols import attach_industry
 from .datasource import get_datasource
 from .datasource.synthetic_source import SyntheticSource
 from .engine import score_factors, screen
@@ -92,6 +93,51 @@ def _screen(args):
     store.close()
 
 
+def _sync(args):
+    """收盘后全量同步（cron/调度入口）：列表→日线→基本面+行业→基准指数。各阶段独立容错。"""
+    cfg = load_config()
+    store = get_storage(cfg)
+    ds = get_datasource(cfg)
+    print(f"[sync] 数据源: {ds.name}")
+    try:
+        update_symbols(ds, store)
+    except Exception as e:  # noqa: BLE001
+        print(f"  ⚠️ 股票列表失败（用已有列表继续）：{e}")
+
+    syms = store.get_symbols()["symbol"].tolist()
+    if args.limit:
+        syms = syms[: args.limit]
+    n = update_daily(ds, store, syms, adjust=cfg.datasource.get("adjust", "hfq"))
+
+    try:
+        fund = ds.fundamentals(syms)
+        try:
+            fund = attach_industry(fund, ds.industry_map())
+        except Exception as ie:  # noqa: BLE001
+            print(f"  ⚠️ 行业映射失败：{ie}")
+        store.upsert_fundamentals(fund)
+    except Exception as e:  # noqa: BLE001
+        print(f"  ⚠️ 基本面失败（PE/ROE 暂缺）：{e}")
+
+    bench = str(cfg.backtest.get("benchmark", "")).strip()
+    if bench:
+        try:
+            update_index(ds, store, bench)
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠️ 基准指数 {bench} 失败：{e}")
+
+    st = store.data_status()
+    print(f"[sync] 完成。最新日线 {st.get('last_daily_date')} | "
+          f"有财务 {st.get('n_with_fundamentals')} 只 | 本次写入日线 {n} 行")
+    store.close()
+
+
+def _schedule(args):
+    """启动 APScheduler 守护：每个交易日收盘后自动跑 sync。"""
+    from .scheduler import main as sched_main
+    sched_main()
+
+
 def _strategy(args):
     """股票池级·walk-forward·多因子回测（含摩擦/涨跌停/基准/IC，PIT 防前视）。"""
     from .runner import run_strategy_backtest
@@ -147,6 +193,12 @@ def main():
     bt = sub.add_parser("backtest")
     bt.add_argument("symbol")
     bt.set_defaults(func=_backtest)
+
+    sy = sub.add_parser("sync", help="全量同步数据（cron 入口）")
+    sy.add_argument("--limit", type=int, default=0, help="0=全部")
+    sy.set_defaults(func=_sync)
+
+    sub.add_parser("schedule", help="启动调度守护（收盘后自动 sync）").set_defaults(func=_schedule)
 
     stg = sub.add_parser("strategy", help="股票池级·walk-forward·多因子回测")
     stg.add_argument("--top", type=int, default=20)

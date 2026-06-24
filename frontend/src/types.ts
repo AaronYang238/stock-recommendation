@@ -4,6 +4,7 @@ export interface Meta {
   n_symbols: number
   indicator_backend: string
   ai: { enabled: boolean; provider: string; model: string }
+  data?: { last_daily_date: string | null; n_with_fundamentals: number }
   disclaimer: string
   glossary: Record<string, string>
   field_schema: Record<string, string>

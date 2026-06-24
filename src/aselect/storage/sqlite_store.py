@@ -56,6 +56,15 @@ CREATE TABLE IF NOT EXISTS features (
     source    TEXT,           -- 产出来源（provider/model），便于复现追溯
     PRIMARY KEY (symbol, date)
 );
+
+-- 指数日线（基准对比用，如沪深300=000300）
+CREATE TABLE IF NOT EXISTS index_daily (
+    code   TEXT NOT NULL,
+    date   TEXT NOT NULL,
+    close  REAL,
+    PRIMARY KEY (code, date)
+);
+CREATE INDEX IF NOT EXISTS idx_index_code ON index_daily(code);
 """
 
 
@@ -150,6 +159,34 @@ class SQLiteStorage(Storage):
         if conds:
             sql += " WHERE " + " AND ".join(conds)
         return pd.read_sql(sql, self.conn, params=params)
+
+    # ── 指数日线（基准） ──
+    def upsert_index(self, code: str, df: pd.DataFrame) -> None:
+        if df is None or df.empty:
+            return
+        out = df.copy()
+        out["code"] = code
+        self._upsert("index_daily", out[["code", "date", "close"]], ["code", "date"])
+
+    def get_index(self, code: str, start: str | None = None,
+                  end: str | None = None) -> pd.DataFrame:
+        sql = "SELECT date, close FROM index_daily WHERE code=?"
+        params: list = [code]
+        if start:
+            sql += " AND date>=?"; params.append(start)
+        if end:
+            sql += " AND date<=?"; params.append(end)
+        sql += " ORDER BY date"
+        return pd.read_sql(sql, self.conn, params=params)
+
+    # ── 数据新鲜度（供 /api/meta 显示陈旧度） ──
+    def data_status(self) -> dict:
+        cur = self.conn.execute("SELECT MAX(date) FROM daily")
+        last_daily = (cur.fetchone() or [None])[0]
+        n_fund = self.conn.execute(
+            "SELECT COUNT(DISTINCT symbol) FROM fundamentals "
+            "WHERE roe IS NOT NULL").fetchone()[0]
+        return {"last_daily_date": last_daily, "n_with_fundamentals": int(n_fund)}
 
     # ── 内部：基于主键的 upsert ──
     def _upsert(self, table: str, df: pd.DataFrame, keys: list[str]) -> None:

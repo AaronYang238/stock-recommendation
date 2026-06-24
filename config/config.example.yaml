@@ -30,6 +30,12 @@ backtest:
   t_plus_1: true          # 模拟 T+1
   limit_up_down: true     # 涨跌停无法成交
 
+# ── 自动调度（收盘后增量同步；python -m aselect.scheduler）────
+scheduler:
+  hour: 16                # 每个交易日 16:30 跑 sync（A 股节假日空跑无副作用）
+  minute: 30
+  limit: 0                # 0=全市场；调小可限制每次同步只数
+
 # ── AI 模块（热插拔 · 铁律二）──────────────────────────────
 ai:
   enabled: false          # 全局开关；false 时整套系统仍可运行

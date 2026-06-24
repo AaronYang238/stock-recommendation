@@ -43,6 +43,20 @@ def update_daily(ds: DataSource, store: Storage, symbols: list[str],
     return n
 
 
+def update_index(ds: DataSource, store: Storage, code: str) -> int:
+    """拉取并入库基准指数日线（如沪深300=000300），供回测真实基准对比。"""
+    try:
+        df = ds.index_daily(code)
+    except Exception as e:  # noqa: BLE001
+        log.warning("指数 %s 拉取失败: %s", code, e)
+        return 0
+    if df is None or df.empty or "close" not in df.columns:
+        return 0
+    store.upsert_index(code, df[["date", "close"]])
+    log.info("更新指数 %s 共 %d 行", code, len(df))
+    return len(df)
+
+
 def build_universe(store: Storage, include_delisted: bool = True) -> list[str]:
     """回测/选股股票池。include_delisted=True 以避免幸存者偏差（第 3.1 节）。"""
     df = store.get_symbols(include_delisted=include_delisted)

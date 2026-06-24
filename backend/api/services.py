@@ -71,11 +71,14 @@ def meta() -> dict:
     cfg = load_config()
     with _store() as (_, store):
         n_symbols = len(store.get_symbols())
+        status = store.data_status()
     ai_enabled = bool(cfg.ai.enabled) and cfg.ai.provider not in (None, "none", "")
     return {
         "n_symbols": n_symbols,
         "indicator_backend": indicator_backend(),
         "ai": {"enabled": ai_enabled, "provider": cfg.ai.provider, "model": cfg.ai.model},
+        "data": {"last_daily_date": status.get("last_daily_date"),
+                 "n_with_fundamentals": status.get("n_with_fundamentals", 0)},
         "disclaimer": cfg.disclaimer,
         "glossary": GLOSSARY,
         "field_schema": FIELD_SCHEMA,
