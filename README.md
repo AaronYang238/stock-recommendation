@@ -101,7 +101,8 @@ API 端点：`/api/meta`、`/api/health`、`/api/candidates`、`/api/stocks/<cod
 单端口、单源（gunicorn 跑 API + whitenoise 托管前端构建产物），并用 systemd 守护 Web 与调度：
 
 ```bash
-bash scripts/serve.sh                    # 构建前端 + gunicorn 起 0.0.0.0:8000（API+前端同源）
+bash scripts/serve.sh                    # 构建前端 + gunicorn 起 0.0.0.0:9090（API+前端同源）
+# 端口可改：PORT=9091 bash scripts/serve.sh（默认 9090，在常见放行段内）
 # 常驻自启：编辑 deploy/*.service 里的路径后
 sudo cp deploy/aselect-web.service deploy/aselect-scheduler.service /etc/systemd/system/
 sudo systemctl enable --now aselect-web aselect-scheduler

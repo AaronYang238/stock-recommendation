@@ -15,7 +15,7 @@ Environment=DJANGO_ALLOWED_HOSTS=*
 # SECRET_KEY 建议放真实值（systemd 不会自动生成）
 Environment=DJANGO_SECRET_KEY=change-me-to-a-long-random-string
 ExecStart=/root/worksapce/stock-recommendation/.venv/bin/gunicorn \
-    aselect_api.wsgi:application -b 0.0.0.0:8000 -w 2 --timeout 120
+    aselect_api.wsgi:application -b 0.0.0.0:9090 -w 2 --timeout 120
 Restart=always
 RestartSec=5
 
