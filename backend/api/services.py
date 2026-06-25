@@ -87,15 +87,62 @@ def meta() -> dict:
     }
 
 
+RECO_COLS = ["date", "symbol", "name", "rank", "score", "board", "status",
+             "pe", "roe", "fwd_5d", "fwd_20d"]
+
+
+# ── /api/health （数据新鲜度 + 调度状态 + AI）──────────────
+def health() -> dict:
+    cfg = load_config()
+    with _store() as (_, store):
+        status = store.data_status()
+        last_sync = store.get_state("last_sync")
+        n_reco = len(store.recommendation_dates())
+    ai_enabled = bool(cfg.ai.enabled) and cfg.ai.provider not in (None, "none", "")
+    return {
+        "status": "ok",
+        "indicator_backend": indicator_backend(),
+        "ai": {"enabled": ai_enabled, "provider": cfg.ai.provider},
+        "data": status,
+        "last_sync": last_sync,
+        "recommendation_days": n_reco,
+    }
+
+
+# ── /api/recommendations + /performance ───────────────────
+def recommendations(date: str | None = None, limit: int = 50) -> dict:
+    with _store() as (_, store):
+        dates = store.recommendation_dates()
+        latest = date or (dates[-1] if dates else None)
+        df = store.get_recommendations(date=latest) if latest else \
+            store.get_recommendations()
+    return {
+        "rows": _records(df.head(limit), RECO_COLS),
+        "dates": dates[-60:],
+        "latest_date": latest,
+    }
+
+
+def recommendation_performance() -> dict:
+    from aselect.recommend import recommendation_performance as _perf
+    with _store() as (_, store):
+        return _perf(store)
+
+
 # ── /api/candidates ───────────────────────────────────────
 def candidates(pe_max: float, roe_min: float, top: int,
                boards: list[str] | None = None,
                statuses: list[str] | None = None,
                as_of: str | None = None) -> dict:
     # as_of：point-in-time 截面（防前视）。缺省=实时（取最新已披露）。
+    # 实时模式优先读 sync 预计算的因子快照（毫秒级，免每请求重扫全市场）。
     with _store() as (cfg, store):
-        cross = build_cross_section(store, cfg, as_of=as_of)
-    scored = score_factors(cross)
+        snap = store.get_factor_snapshot() if not as_of else None
+        if snap is not None and not snap.empty:
+            scored = snap
+        else:
+            cross = build_cross_section(store, cfg, as_of=as_of)
+            scored = score_factors(cross)
     spec = FilterSpec(
         name="api-screen",
         conditions=[Condition("pe", "<", pe_max), Condition("roe", ">", roe_min)],

@@ -2,6 +2,7 @@
 import type {
   Meta, CandidatesResponse, DailyResponse, BacktestResponse,
   ReportResponse, Filters, StrategyBacktestResponse, ResearchReport,
+  RecommendationsResponse, RecommendationPerformance,
 } from './types'
 
 async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
@@ -55,4 +56,12 @@ export function fetchStrategyBacktest(
 export function fetchResearchReport(freq: string, top: number): Promise<ResearchReport> {
   const p = new URLSearchParams({ freq, top: String(top) })
   return getJSON<ResearchReport>(`/api/research/report/?${p.toString()}`)
+}
+
+export function fetchRecommendations(): Promise<RecommendationsResponse> {
+  return getJSON<RecommendationsResponse>('/api/recommendations/')
+}
+
+export function fetchRecommendationPerformance(): Promise<RecommendationPerformance> {
+  return getJSON<RecommendationPerformance>('/api/recommendations/performance/')
 }

@@ -64,6 +64,23 @@ def report(request, symbol: str):
 
 
 @api_view(["GET"])
+def health(request):
+    return Response(services.health())
+
+
+@api_view(["GET"])
+def recommendations(request):
+    q = request.query_params
+    return Response(services.recommendations(
+        date=q.get("date") or None, limit=_to_int(q.get("limit"), 50)))
+
+
+@api_view(["GET"])
+def recommendation_performance(request):
+    return Response(services.recommendation_performance())
+
+
+@api_view(["GET"])
 def research_report(request):
     q = request.query_params
     return Response(services.research_report(

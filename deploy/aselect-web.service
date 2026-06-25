@@ -1,0 +1,23 @@
+# systemd 单元：aselect Web（gunicorn，托管 API + 前端）
+# 安装：编辑下方路径 → sudo cp deploy/aselect-web.service /etc/systemd/system/
+#        sudo systemctl enable --now aselect-web
+# 前提：先 bash scripts/serve.sh 跑一次（建好 .venv、装好 gunicorn、构建好前端）。
+[Unit]
+Description=aselect web (gunicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/worksapce/stock-recommendation/backend
+Environment=DJANGO_DEBUG=0
+Environment=DJANGO_ALLOWED_HOSTS=*
+# SECRET_KEY 建议放真实值（systemd 不会自动生成）
+Environment=DJANGO_SECRET_KEY=change-me-to-a-long-random-string
+ExecStart=/root/worksapce/stock-recommendation/.venv/bin/gunicorn \
+    aselect_api.wsgi:application -b 0.0.0.0:8000 -w 2 --timeout 120
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

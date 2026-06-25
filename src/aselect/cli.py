@@ -126,6 +126,19 @@ def _sync(args):
         except Exception as e:  # noqa: BLE001
             print(f"  ⚠️ 基准指数 {bench} 失败：{e}")
 
+    # 预计算因子快照(供 /api/candidates 提速) + 每日推荐落库 + 回填历史推荐战绩
+    try:
+        from .recommend import (generate_recommendations, refresh_snapshot,
+                                 track_recommendation_returns)
+        ns = refresh_snapshot(store, cfg)
+        nr = generate_recommendations(store, cfg, top_n=args.top)
+        nt = track_recommendation_returns(store, cfg)
+        print(f"  快照 {ns} 只 | 新增推荐 {nr} 条 | 回填战绩 {nt} 条")
+    except Exception as e:  # noqa: BLE001
+        print(f"  ⚠️ 快照/推荐生成失败：{e}")
+
+    import pandas as _pd
+    store.set_state("last_sync", _pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"))
     st = store.data_status()
     print(f"[sync] 完成。最新日线 {st.get('last_daily_date')} | "
           f"有财务 {st.get('n_with_fundamentals')} 只 | 本次写入日线 {n} 行")
@@ -230,6 +243,7 @@ def main():
 
     sy = sub.add_parser("sync", help="全量同步数据（cron 入口）")
     sy.add_argument("--limit", type=int, default=0, help="0=全部")
+    sy.add_argument("--top", type=int, default=20, help="每日推荐落库的只数")
     sy.set_defaults(func=_sync)
 
     sub.add_parser("schedule", help="启动调度守护（收盘后自动 sync）").set_defaults(func=_schedule)

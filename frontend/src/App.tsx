@@ -9,6 +9,7 @@ import StockDetail from './components/StockDetail'
 import StockQuery from './components/StockQuery'
 import StrategyBacktest from './components/StrategyBacktest'
 import ResearchPanel from './components/ResearchPanel'
+import RecommendationsPanel from './components/RecommendationsPanel'
 
 const DEFAULT_FILTERS: Filters = {
   pe_max: 30, roe_min: 10, top: 20, boards: [], statuses: [],
@@ -86,6 +87,8 @@ export default function App() {
           />
 
           <main className="content">
+            <RecommendationsPanel />
+
             <StockQuery initialSymbol={selected ?? undefined} />
 
             <h3>候选股（命中 {data?.count ?? 0} 只）</h3>

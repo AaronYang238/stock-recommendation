@@ -1,0 +1,17 @@
+# systemd 单元：aselect 调度（收盘后自动 sync：拉数据 + 重算快照 + 生成推荐 + 跟踪战绩）
+# 安装：编辑路径 → sudo cp deploy/aselect-scheduler.service /etc/systemd/system/
+#        sudo systemctl enable --now aselect-scheduler
+[Unit]
+Description=aselect scheduler (daily sync after close)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/worksapce/stock-recommendation
+ExecStart=/root/worksapce/stock-recommendation/.venv/bin/python -m aselect.scheduler
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

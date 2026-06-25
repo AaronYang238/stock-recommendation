@@ -1,3 +1,7 @@
 # 后端依赖（在仓库根的核心依赖之上额外需要）
 django>=5.0
 djangorestframework>=3.15
+
+# 生产部署（scripts/serve.sh）：gunicorn 跑 WSGI，whitenoise 托管前端构建产物
+gunicorn>=21.2
+whitenoise>=6.6

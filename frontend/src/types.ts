@@ -91,6 +91,37 @@ export interface StrategyMetrics {
   avg_positions: number
 }
 
+export interface Recommendation {
+  date: string
+  symbol: string
+  name: string | null
+  rank: number | null
+  score: number | null
+  board: string | null
+  status: string | null
+  pe: number | null
+  roe: number | null
+  fwd_5d: number | null
+  fwd_20d: number | null
+}
+
+export interface RecommendationsResponse {
+  rows: Recommendation[]
+  dates: string[]
+  latest_date: string | null
+}
+
+export interface RecommendationPerformance {
+  n_total: number
+  n_dates: number
+  avg_5d: number | null
+  win_5d: number | null
+  n_5d: number
+  avg_20d: number | null
+  win_20d: number | null
+  n_20d: number
+}
+
 export interface FactorIC {
   name: string
   ic_mean: number

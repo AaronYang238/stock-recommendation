@@ -65,6 +65,37 @@ CREATE TABLE IF NOT EXISTS index_daily (
     PRIMARY KEY (code, date)
 );
 CREATE INDEX IF NOT EXISTS idx_index_code ON index_daily(code);
+
+-- 每日推荐落库（含快照理由）+ 事后前向收益跟踪（用真实表现证明高回报）
+CREATE TABLE IF NOT EXISTS recommendations (
+    date    TEXT NOT NULL,        -- 推荐生成日
+    symbol  TEXT NOT NULL,
+    name    TEXT,
+    rank    INTEGER,
+    score   REAL,                 -- 多因子综合得分
+    board   TEXT, status TEXT,
+    pe REAL, roe REAL,            -- 快照（推荐理由）
+    fwd_5d  REAL,                 -- 事后填充：5/20 个交易日前向收益
+    fwd_20d REAL,
+    PRIMARY KEY (date, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_reco_date ON recommendations(date);
+
+-- 因子快照缓存：sync 预计算当日打分截面，/api/candidates 直接读，免每请求重扫全市场
+CREATE TABLE IF NOT EXISTS factor_snapshot (
+    snap_date TEXT NOT NULL,
+    symbol  TEXT NOT NULL,
+    name TEXT, board TEXT, status_label TEXT,
+    pe REAL, pb REAL, roe REAL, revenue_yoy REAL, mom_60 REAL,
+    score_value REAL, score_quality REAL, total_score REAL,
+    PRIMARY KEY (snap_date, symbol)
+);
+
+-- 轻量 KV（last_sync 等运行状态，供 /api/health）
+CREATE TABLE IF NOT EXISTS app_state (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 
@@ -73,6 +104,11 @@ class SQLiteStorage(Storage):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path))
+        # WAL：web 读 + 调度写 并发更稳（生产高可用）
+        try:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.Error:
+            pass
         self.conn.executescript(_SCHEMA)
         self._migrate()
         self.conn.commit()
@@ -187,6 +223,64 @@ class SQLiteStorage(Storage):
             "SELECT COUNT(DISTINCT symbol) FROM fundamentals "
             "WHERE roe IS NOT NULL").fetchone()[0]
         return {"last_daily_date": last_daily, "n_with_fundamentals": int(n_fund)}
+
+    # ── 推荐落库 + 战绩跟踪 ──
+    def upsert_recommendations(self, df: pd.DataFrame) -> None:
+        self._upsert("recommendations", df, ["date", "symbol"])
+
+    def get_recommendations(self, start: str | None = None,
+                            end: str | None = None,
+                            date: str | None = None) -> pd.DataFrame:
+        sql = "SELECT * FROM recommendations"
+        conds, params = [], []
+        if date:
+            conds.append("date=?"); params.append(date)
+        if start:
+            conds.append("date>=?"); params.append(start)
+        if end:
+            conds.append("date<=?"); params.append(end)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY date DESC, rank ASC"
+        return pd.read_sql(sql, self.conn, params=params)
+
+    def recommendation_dates(self) -> list[str]:
+        cur = self.conn.execute("SELECT DISTINCT date FROM recommendations ORDER BY date")
+        return [r[0] for r in cur.fetchall()]
+
+    def set_recommendation_returns(self, date: str, symbol: str,
+                                   fwd_5d=None, fwd_20d=None) -> None:
+        self.conn.execute(
+            "UPDATE recommendations SET fwd_5d=?, fwd_20d=? WHERE date=? AND symbol=?",
+            (fwd_5d, fwd_20d, date, symbol))
+        self.conn.commit()
+
+    # ── 因子快照缓存 ──
+    def replace_factor_snapshot(self, snap_date: str, df: pd.DataFrame) -> None:
+        self.conn.execute("DELETE FROM factor_snapshot WHERE snap_date=?", (snap_date,))
+        self.conn.commit()
+        out = df.copy()
+        out["snap_date"] = snap_date
+        self._upsert("factor_snapshot", out, ["snap_date", "symbol"])
+
+    def get_factor_snapshot(self) -> pd.DataFrame:
+        cur = self.conn.execute("SELECT MAX(snap_date) FROM factor_snapshot")
+        latest = (cur.fetchone() or [None])[0]
+        if not latest:
+            return pd.DataFrame()
+        return pd.read_sql("SELECT * FROM factor_snapshot WHERE snap_date=?",
+                           self.conn, params=[latest])
+
+    # ── 运行状态 KV ──
+    def set_state(self, key: str, value: str) -> None:
+        self.conn.execute("INSERT OR REPLACE INTO app_state(key, value) VALUES (?, ?)",
+                          (key, value))
+        self.conn.commit()
+
+    def get_state(self, key: str) -> str | None:
+        cur = self.conn.execute("SELECT value FROM app_state WHERE key=?", (key,))
+        row = cur.fetchone()
+        return row[0] if row else None
 
     # ── 内部：基于主键的 upsert ──
     def _upsert(self, table: str, df: pd.DataFrame, keys: list[str]) -> None:

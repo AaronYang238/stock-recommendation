@@ -91,8 +91,23 @@ npm run dev                                     # 打开 http://localhost:9090
 - **个股查询**：输入任意股票代码 + 起止日期，查看指定区间内的 **K 线（蜡烛图，红涨绿跌）+ MA20/MA60**。
 - **候选股**：表格带板块/状态分类与表头 ⓘ 术语提示，点选个股看 K 线、回测与 AI 报告。
 - **策略回测**：股票池级 walk-forward 多因子回测，设持仓数/调仓频率，看策略净值 vs 基准曲线与 IC/超额/夏普/盈亏比等指标。
+- **每日推荐·战绩**：每个交易日 `sync` 自动落库 top-N 推荐，事后回填 5/20 日真实前向收益，用表现证明高回报。
+- **因子/策略研究**：单因子 IC 表 + 样本外(hold-out)验证。
 
-API 端点：`/api/meta`、`/api/candidates`、`/api/stocks/<code>/daily?start=&end=`（区间 K 线）、`/api/stocks/<code>/backtest|report`、`/api/strategy/backtest`。
+API 端点：`/api/meta`、`/api/health`、`/api/candidates`、`/api/stocks/<code>/daily?start=&end=`、`/api/stocks/<code>/backtest|report`、`/api/strategy/backtest`、`/api/research/report`、`/api/recommendations`(+`/performance`)。
+
+## 生产部署（个人自用，常驻）
+
+单端口、单源（gunicorn 跑 API + whitenoise 托管前端构建产物），并用 systemd 守护 Web 与调度：
+
+```bash
+bash scripts/serve.sh                    # 构建前端 + gunicorn 起 0.0.0.0:8000（API+前端同源）
+# 常驻自启：编辑 deploy/*.service 里的路径后
+sudo cp deploy/aselect-web.service deploy/aselect-scheduler.service /etc/systemd/system/
+sudo systemctl enable --now aselect-web aselect-scheduler
+```
+
+`aselect-scheduler` 每个交易日收盘后自动 `sync`（拉数据 → 重算因子快照 → 生成当日推荐 → 回填历史战绩）。生产态 `DEBUG=0`、`DJANGO_SECRET_KEY`/`DJANGO_ALLOWED_HOSTS` 走环境变量。
 
 ## 启用 AI（可选，默认关闭）
 
@@ -128,6 +143,7 @@ pytest          # 含：核心无 LLM 依赖、优雅降级、可复现、防注
 - [x] 真实财务/行业/披露日接入：akshare 行业（板块成分→symbol 映射）；**tushare 适配器补全**（`daily_basic` 估值 + `fina_indicator` 的 ROE/毛利率/同比 + 公告日 `ann_date`），为被封网环境提供可用数据路径与真实 PIT 财务
 - [x] 数据自动化（整改阶段一）：`sync` 全量同步（列表→日线→基本面+行业→**真实沪深300基准入库**）；APScheduler 调度守护收盘后自动跑；tushare 适配器改批量+限频+退市；`/api/meta` 显示数据新鲜度
 - [x] 收益验证（整改阶段二）：单因子 walk-forward IC 研究（IC 均值/ICIR/IC胜率/分层多空/衰减，`factor-ic`）；按 IC 聚合类别权重；**样本外(hold-out)纪律**（`strategy --oos`：训练段拟合权重、样本外只测一次）；`/api/research/report` + 前端「因子/策略研究」面板
+- [x] 生产高可用 + 推荐战绩（整改阶段三）：每日推荐落库 + **事后前向收益跟踪**（5/20 日，`recommendations` 表 + `/api/recommendations`+`/performance` + 前端「每日推荐·战绩」面板）；`factor_snapshot` 缓存让 `/api/candidates` 免每请求重扫；`/api/health` 健康检查；SQLite WAL；gunicorn+whitenoise 单源生产部署（`scripts/serve.sh` + systemd 单元）
 - [ ] 监控预警推送（邮件/Telegram/企业微信）— 待接
 - [ ] 6. NL 筛选与 AI 报告接入真实 Key 联调
 - [ ] 接入点①：舆情/公告 情绪与事件因子（爬取/拉取财经文本 → AI 落地为因子）— 见下方「规划」，**暂不实现**
