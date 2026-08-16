@@ -111,3 +111,24 @@ def test_orthogonalize_removes_correlation_with_regressors():
 def test_orthogonalize_empty_regressors_returns_input():
     y = pd.Series([1.0, 2.0, 3.0])
     pd.testing.assert_series_equal(orthogonalize(y, pd.DataFrame(index=y.index)), y)
+
+
+def test_score_factors_orthogonalizes_sentiment_against_base():
+    """sentiment=2*roe+独立部分：正交后 score_sentiment 与 score_quality 近乎不相关。"""
+    rng = np.random.default_rng(1)
+    n = 150
+    roe = rng.normal(size=n)
+    indep = rng.normal(size=n)
+    df = pd.DataFrame({
+        "symbol": [str(i) for i in range(n)],
+        "industry": rng.choice(["A", "B", "C"], n),
+        "total_mv": rng.uniform(50e8, 5000e8, n),
+        "roe": roe,
+        "sentiment": 2 * roe + indep,
+    })
+    out = score_factors(df).set_index("symbol")
+    c = np.corrcoef(out["score_sentiment"], out["score_quality"])[0, 1]
+    assert abs(c) < 0.15                    # 与基础因子(quality/roe)重叠部分被剔除
+    assert out["total_score"].notna().all()
+    # 仍保留独立信息：与 indep 正相关（经中性化管线后被稀释，但方向为正、未被抹平）
+    assert np.corrcoef(out["score_sentiment"], indep)[0, 1] > 0.05
