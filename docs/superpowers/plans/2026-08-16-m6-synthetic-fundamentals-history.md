@@ -49,6 +49,11 @@
 **2. Placeholder scan:** 各 Step 含断言/最小实现;无 TBD/TODO。
 **3. Type consistency:** `fundamentals()` 列集合不变;仅行数变多。
 
+## 完成记录(2026-08-16)
+- 2 任务 TDD 落地,全仓 150 测试通过,已推送(PR #1)。
+- `fundamentals()` 改逐季历史快照(真实 ann_date、PIT);非破坏(既有消费者全绿)。
+- 回报验证:`run_factor_research` 现产出 `roe` n=34、`hotspot` n=32(此前均为 0),历史 IC 解锁,`industry_neutral` 标志可观测。
+
 ## 后续
 - 接真实 akshare `stock_financial_*`(真实披露日)→ 真数据阶段。
 - 情绪历史新闻夹具(让情绪因子也有历史 IC)→ 需要时再做。

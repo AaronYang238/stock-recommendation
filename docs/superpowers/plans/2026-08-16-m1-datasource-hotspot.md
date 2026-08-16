@@ -466,7 +466,7 @@ git commit  # test: 热点因子单独 walk-forward IC 验证纳入 factor-ic
 **3. Type consistency:** `add_hotspot_factor(cross, limit_pct=0.099) -> DataFrame`、`FactorDef(..., industry_neutral=True)`、新列名 `turnover`/`net_inflow`/`pct_chg`/`hotspot` 在各 Task 间一致。
 
 ## 后续(不属 M1,记录以免遗漏)
-- **【已决,优先】合成源历史季报快照**:`SyntheticSource.fundamentals()` 现仅产出「今日快照」(`ann_date=today`),导致 PIT 历史模式下所有基本面因子(value/growth/quality + hotspot)拿不到历史行业/财务 → 无法产出历史 IC(执行 M1 Task 6 时发现)。改为**按季度产出多期快照、带真实 `ann_date`**(严格 PIT、无前视),一次性解锁全部基本面因子的历史 IC 验证,并使 `run_factor_research` 中的 `industry_neutral` 标志变得可观测。**用户 2026-08-16 已拍板采用此方案**,留待下次实施。
+- ✅ **【已完成 2026-08-16】合成源历史季报快照**:`SyntheticSource.fundamentals()` 已改为逐季多期快照(真实 `ann_date`、严格 PIT)。解锁了基本面因子(roe n=34)与热点因子(hotspot n=32)的历史 IC(此前单快照下均为 0),`industry_neutral` 标志现可观测。见 `2026-08-16-m6-synthetic-fundamentals-history.md`。
 - 「个股在板块内相对位置」子项 → 并入热点因子增强或 M2。
 - 龙虎榜实盘信号(非回测因子) → M3 通知/实盘信号阶段。
 - 热点因子对已有因子正交化 → 多因子加权阶段(M2)。
