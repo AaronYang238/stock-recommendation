@@ -30,6 +30,7 @@ def add_indicators(df: pd.DataFrame,
     out["macd"], out["macd_signal"], out["macd_hist"] = macd, signal, hist
 
     out["rsi14"] = _rsi(close, 14)
+    out["atr14"] = _atr(high, low, close, 14)
 
     k, d, j = _kdj(high, low, close)
     out["kdj_k"], out["kdj_d"], out["kdj_j"] = k, d, j
@@ -96,6 +97,17 @@ def _boll(s: pd.Series, n: int = 20, k: float = 2.0):
     mid = s.rolling(n).mean()
     std = s.rolling(n).std(ddof=0)
     return mid, mid + k * std, mid - k * std
+
+
+def _atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> pd.Series:
+    if _HAS_PTA:
+        return _pta.atr(high, low, close, length=n)
+    prev_close = close.shift(1)
+    tr = pd.concat([(high - low),
+                    (high - prev_close).abs(),
+                    (low - prev_close).abs()], axis=1).max(axis=1)
+    # Wilder 平滑（与 RSI 一致）
+    return tr.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
 
 
 def backend() -> str:
