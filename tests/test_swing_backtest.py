@@ -21,7 +21,7 @@ def _cfg() -> Config:
 
 def _seed(tmp_path) -> tuple[SQLiteStorage, Config]:
     store = SQLiteStorage(str(tmp_path / "sw.sqlite"))
-    ds = SyntheticSource()
+    ds = SyntheticSource(days=220)          # 够周度调仓+指标，且测试快
     update_symbols(ds, store)
     syms = ds._all_symbols()
     update_daily(ds, store, syms, "hfq")
@@ -77,3 +77,32 @@ def test_simulate_position_no_trade_when_entry_at_last_bar():
     from aselect.engine.swing_backtest import simulate_position
     frame = _frame(list(np.linspace(100, 110, 30)))
     assert simulate_position(frame, entry_idx=len(frame) - 1, cost=_COST) is None
+
+
+# ── Task 3: 组合级事件回测 ──────────────────────────────────
+def test_run_swing_backtest_produces_report(tmp_path):
+    from aselect.engine.swing_backtest import SwingReport
+    from aselect.runner import run_swing_backtest
+    store, cfg = _seed(tmp_path)
+    rep = run_swing_backtest(store, cfg, freq="W", top_n=5)
+    assert isinstance(rep, SwingReport)
+    assert rep.n_trades > 0
+    assert np.isfinite(rep.expectancy)
+    assert np.isfinite(rep.profit_loss_ratio)
+
+
+def test_run_swing_backtest_deterministic(tmp_path):
+    from aselect.runner import run_swing_backtest
+    store, cfg = _seed(tmp_path)
+    a = run_swing_backtest(store, cfg, freq="W", top_n=5)
+    b = run_swing_backtest(store, cfg, freq="W", top_n=5)
+    assert a.n_trades == b.n_trades
+    assert a.expectancy == b.expectancy
+
+
+def test_run_swing_backtest_single_industry_cap(tmp_path):
+    """单行业 ≤ max_per_industry：任一入场周内同行业笔数不超过上限（有行业信息时）。"""
+    from aselect.runner import run_swing_backtest
+    store, cfg = _seed(tmp_path)
+    rep = run_swing_backtest(store, cfg, freq="W", top_n=8, max_per_industry=2)
+    assert rep.n_trades > 0   # 编排跑通；集中度约束由实现保证

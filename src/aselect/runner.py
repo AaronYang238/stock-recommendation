@@ -141,6 +141,94 @@ def run_validated_strategy(store: Storage, config: Config, freq: str = "M",
     return {"split_date": split_date, "weights": weights, "train": train, "oos": oos}
 
 
+# ── 阶段三：事件驱动周级摆动回测 + 消融对照 ────────────────
+def run_swing_backtest(
+    store: Storage, config: Config,
+    start: str | None = None, end: str | None = None,
+    freq: str = "W", top_n: int = 10, max_per_industry: int = 2,
+    weights: dict | None = None, gate: bool = True,
+    exit_params=None, limit_pct: float = 0.095,
+):
+    """组合级事件驱动回测：每周刷新候选(打分→入场闸门→单行业≤2→top_n)，
+    每笔用 simulate_position 逐日离场。返回 SwingReport。
+
+    gate=False 时不做入场闸门(供消融对照)；exit_fn 可注入基线离场(供离场消融)。
+    """
+    from .engine.strategy_rules import ExitParams, entry_gate
+    from .engine.swing_backtest import simulate_position
+    return _run_swing(store, config, start, end, freq, top_n, max_per_industry,
+                      weights, gate, exit_params or ExitParams(), limit_pct,
+                      entry_gate, simulate_position)
+
+
+def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
+               weights, gate, exit_params, limit_pct, entry_gate, position_fn):
+    from .engine.swing_backtest import SwingReport, _swing_metrics
+
+    adjust = config.datasource.get("adjust", "hfq")
+    universe = build_universe(store, include_delisted=True)     # 含退市/ST
+    frames = _ohlc_frames(store, universe, adjust, start, end)
+    panel = _price_panel(store, universe, adjust, start, end)
+    if panel.shape[0] < 2 or not frames:
+        return _swing_metrics([], config.backtest)
+    schedule = _rebalance_dates(panel.index, freq)
+
+    trades = []
+    baskets: dict = {}                    # 每调仓日的一篮子净收益（等权）
+    for t in schedule:
+        as_of = pd.Timestamp(t).strftime("%Y-%m-%d")
+        cross = build_cross_section(store, config, symbols=universe, as_of=as_of)
+        if cross.empty:
+            continue
+        scored = score_factors(cross, weights=weights)
+        tradable = set(_tradable(panel, t, limit_pct))
+        picks = _select_candidates(scored, tradable, frames, t, top_n,
+                                   max_per_industry, gate, entry_gate)
+        basket = []
+        for sym in picks:
+            fr = frames[sym]
+            loc = fr.index.get_indexer([pd.Timestamp(t)])[0]
+            if loc < 0:
+                continue
+            tr = position_fn(fr, entry_idx=loc, cost=config.backtest,
+                             exit_params=exit_params, limit_pct=limit_pct)
+            if tr is not None:
+                trades.append(tr)
+                basket.append(tr.ret)
+        if basket:
+            baskets[pd.Timestamp(t)] = float(pd.Series(basket).mean())
+    return _swing_metrics(trades, config.backtest, baskets)
+
+
+def _select_candidates(scored, tradable, frames, t, top_n, max_per_industry,
+                       gate, entry_gate) -> list:
+    """按打分降序取候选：可成交 + 通过入场闸门 + 单行业≤上限，最多 top_n 只。"""
+    has_ind = "industry" in scored.columns
+    per_ind: dict = {}
+    picks: list = []
+    ts = pd.Timestamp(t)
+    for _, row in scored.iterrows():
+        sym = row["symbol"]
+        if sym not in tradable or sym not in frames:
+            continue
+        fr = frames[sym]
+        loc = fr.index.get_indexer([ts])[0]
+        if loc < 21:                       # 历史不足以算闸门指标
+            continue
+        if gate:
+            if not entry_gate(fr.iloc[:loc + 1]).passed:
+                continue
+        ind = row["industry"] if has_ind and pd.notna(row.get("industry")) else None
+        if ind is not None and per_ind.get(ind, 0) >= max_per_industry:
+            continue
+        picks.append(sym)
+        if ind is not None:
+            per_ind[ind] = per_ind.get(ind, 0) + 1
+        if len(picks) >= top_n:
+            break
+    return picks
+
+
 # ── 数据准备 ──────────────────────────────────────────────
 def _price_panel(store: Storage, symbols, adjust, start, end) -> pd.DataFrame:
     """宽表：index=日期, columns=symbol, 值=后复权收盘。"""

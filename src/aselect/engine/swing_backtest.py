@@ -128,3 +128,33 @@ def simulate_position(frame: pd.DataFrame, entry_idx: int, cost: dict,
 
 def _sym(frame: pd.DataFrame) -> str:
     return str(frame["symbol"].iloc[0]) if "symbol" in frame.columns else "?"
+
+
+def _swing_metrics(trades: list, cost: dict, baskets: dict | None = None) -> SwingReport:
+    """由逐笔交易 + 每调仓日等权篮子收益，汇总组合指标（按笔盈亏比/期望，含胜率仅参考）。"""
+    n = len(trades)
+    if n == 0:
+        return SwingReport(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0,
+                           trades=[], equity_curve=pd.Series(dtype=float))
+    rets = pd.Series([t.ret for t in trades], dtype=float)
+    wins, losses = rets[rets > 0], rets[rets < 0]
+    expectancy = float(rets.mean())
+    pl_ratio = float(wins.mean() / abs(losses.mean())) if len(losses) and losses.mean() != 0 else 0.0
+    win_rate = float(len(wins) / n)
+
+    baskets = baskets or {}
+    if baskets:
+        s = pd.Series(baskets).sort_index()
+        eq = (1 + s).cumprod()
+        total = float(eq.iloc[-1] - 1)
+        sharpe = float(np.sqrt(52) * s.mean() / s.std()) if s.std() > 0 else 0.0
+        peak = eq.cummax()
+        mdd = float(((eq - peak) / peak).min())
+    else:
+        eq, total, sharpe, mdd = pd.Series(dtype=float), 0.0, 0.0, 0.0
+
+    return SwingReport(
+        total_return=round(total, 4), sharpe=round(sharpe, 3),
+        max_drawdown=round(mdd, 4), expectancy=round(expectancy, 5),
+        profit_loss_ratio=round(pl_ratio, 3), win_rate=round(win_rate, 3),
+        n_trades=n, trades=trades, equity_curve=eq)
