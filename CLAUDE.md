@@ -48,8 +48,7 @@
 | 计算/指标 | pandas + pandas-ta(不可用时回退经测试的向量化实现) |
 | 回测 | backtrader(不可用时回退向量化无前视简版) |
 | 存储 | SQLite(Parquet 规划中) |
-| 后端 | Django + DRF(REST 外壳，只读核心，不含业务 ORM) |
-| 前端 | React + Vite + TypeScript(单页，端口 9090，/api 代理到 :8000) |
+| 运行入口 | 纯命令行(`python -m aselect.cli` / `aselect.scheduler`)，无 Web 前后端 |
 | 调度 | APScheduler / cron(收盘后自动 sync，已接入) |
 | AI | 兼容 OpenAI/Anthropic 协议,适配器 + 工厂模式 |
 
@@ -64,15 +63,15 @@ src/aselect/                 ← 确定性核心包(与表现层解耦)
   data/        采集 · 清洗 · 截面因子表构建(含退市/ST/板块)
   engine/      指标 · 因子 · 筛选 · 回测   ← AI 禁区
   ai/          AIAnalyzer 接口 · 各提供商适配器 · NullAnalyzer
-  cli.py       命令行入口(seed/update/screen/backtest)
-backend/       Django + DRF：把核心封装成 REST API(只读，无业务 ORM)
-frontend/      React + Vite + TypeScript 单页前端
+  notify/      通知外壳(Notifier 抽象 / FeishuWebhookNotifier / NullNotifier)
+  cli.py       命令行入口(seed/update/sync/screen/backtest/factor-ic/strategy/swing/ablation/notify/sentiment)
+  scheduler.py 调度守护(收盘后自动 sync)
 config/config.yaml  运行与 AI 配置        .env  密钥(禁止提交)
 ```
 
-核心包 `aselect` 内依赖方向 `datasource → data → engine`;`ai` 只在 data 输入端与
-app/api 输出端被调用,**不得被 engine 引用**(有 `test_no_llm_in_core` 静态守护)。
-`backend/` `frontend/` 只是外壳,**不得被核心反向依赖**。
+核心包 `aselect` 内依赖方向 `datasource → data → engine`;`ai` 只在 data 输入端、
+`notify` 只在输出端被调用,**均不得被 engine 引用**(有 `test_no_llm_in_core` 静态守护)。
+本项目为**纯命令行工具**(无 Web 前后端);表现层即 `cli.py` / `scheduler.py`。
 
 ---
 
@@ -88,8 +87,11 @@ python -m aselect.cli backtest <code>   # 单只回测(MA 交叉)
 python -m aselect.cli factor-ic         # 单因子 walk-forward IC 研究(纳入加权前先验)
 python -m aselect.cli strategy --top 20 --freq M           # 股票池级 walk-forward 回测
 python -m aselect.cli strategy --oos 0.7  # 样本外纪律:训练段拟合IC权重，样本外只测一次
-python backend/manage.py runserver 8000 # 后端 API
-cd frontend && npm run dev              # 前端(http://localhost:9090)
+python -m aselect.cli swing --top 10    # 事件驱动周级摆动回测(入场闸门+移动止损)
+python -m aselect.cli swing --oos 0.7   # 摆动回测样本外一次性验收
+python -m aselect.cli ablation          # 消融对照:追高/过早止盈两大风险量化成钱
+python -m aselect.cli notify            # 飞书推送候选(未配置则本地打印)
+python -m aselect.cli sentiment         # AI 舆情情绪 → 正交因子入库(AI 关则中性)
 pytest                                  # 测试
 ```
 
