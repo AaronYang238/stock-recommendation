@@ -48,9 +48,10 @@ _DEMO_SPECIAL = [
 class SyntheticSource(DataSource):
     name = "synthetic"
 
-    def __init__(self, days: int = 750, seed: int = 42):
+    def __init__(self, days: int = 750, seed: int = 42, fund_quarters: int = 12):
         self.days = days
         self.seed = seed
+        self.fund_quarters = fund_quarters
 
     def list_symbols(self) -> pd.DataFrame:
         rows = [{"symbol": s, "name": n, "exchange": e,
@@ -91,25 +92,38 @@ class SyntheticSource(DataSource):
         return df.reset_index(drop=True)
 
     def fundamentals(self, symbols=None) -> pd.DataFrame:
+        """逐季度历史快照（真实披露日 ann_date，严格 PIT，防前视）。
+
+        每期 date=报告期(季度末)、ann_date=披露日(报告期+~1月且≤今日)；行业跨期恒定；
+        财务指标按 (symbol, 期序) 确定性派生。多期入库后 PIT 历史回测才拿得到基本面/行业。
+        """
         syms = symbols or self._all_symbols()
+        today = pd.Timestamp.today().normalize()
+        q_ends = pd.date_range(end=today, periods=self.fund_quarters + 4, freq="QE")
         rows = []
         for s in syms:
-            r = np.random.default_rng(self.seed + (_stable_seed(s) % 10_000))
-            rows.append({
-                "symbol": s, "date": pd.Timestamp.today().strftime("%Y-%m-%d"),
-                "ann_date": pd.Timestamp.today().strftime("%Y-%m-%d"),  # 披露日=今日(快照)
-                "industry": _INDUSTRY.get(s, "其他"),   # 供行业中性化
-                "pe": round(float(r.uniform(5, 60)), 2),
-                "pb": round(float(r.uniform(0.5, 12)), 2),
-                "ps": round(float(r.uniform(0.5, 20)), 2),
-                "roe": round(float(r.uniform(-5, 35)), 2),
-                "roa": round(float(r.uniform(-2, 18)), 2),
-                "revenue_yoy": round(float(r.uniform(-20, 60)), 2),
-                "profit_yoy": round(float(r.uniform(-40, 80)), 2),
-                "gross_margin": round(float(r.uniform(5, 70)), 2),
-                "debt_ratio": round(float(r.uniform(10, 80)), 2),
-                "total_mv": round(float(r.uniform(50, 5000)) * 1e8, 0),
-            })
+            base = _stable_seed(s) % 10_000
+            for qi, rep in enumerate(q_ends):
+                ann = rep + pd.Timedelta(days=35)      # 披露 lag ~1 月
+                if ann > today:                        # 不披露未来（无前视）
+                    continue
+                r = np.random.default_rng(self.seed + base + qi)
+                rows.append({
+                    "symbol": s,
+                    "date": rep.strftime("%Y-%m-%d"),          # 报告期
+                    "ann_date": ann.strftime("%Y-%m-%d"),      # 披露日
+                    "industry": _INDUSTRY.get(s, "其他"),       # 结构性元数据，跨期恒定
+                    "pe": round(float(r.uniform(5, 60)), 2),
+                    "pb": round(float(r.uniform(0.5, 12)), 2),
+                    "ps": round(float(r.uniform(0.5, 20)), 2),
+                    "roe": round(float(r.uniform(-5, 35)), 2),
+                    "roa": round(float(r.uniform(-2, 18)), 2),
+                    "revenue_yoy": round(float(r.uniform(-20, 60)), 2),
+                    "profit_yoy": round(float(r.uniform(-40, 80)), 2),
+                    "gross_margin": round(float(r.uniform(5, 70)), 2),
+                    "debt_ratio": round(float(r.uniform(10, 80)), 2),
+                    "total_mv": round(float(r.uniform(50, 5000)) * 1e8, 0),
+                })
         return pd.DataFrame(rows)
 
     def index_daily(self, index_code, start=None, end=None) -> pd.DataFrame:
