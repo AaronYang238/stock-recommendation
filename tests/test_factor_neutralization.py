@@ -6,7 +6,7 @@ import pandas as pd
 
 from aselect.datasource.synthetic_source import SyntheticSource
 from aselect.engine.factors import (
-    process_factor, score_factors, winsorize, zscore,
+    FactorDef, process_factor, score_factors, winsorize, zscore,
 )
 
 
@@ -71,3 +71,26 @@ def test_score_factors_without_industry_or_size():
     scored = score_factors(df)
     assert "total_score" in scored.columns
     assert len(scored) == 4
+
+
+def test_factordef_has_industry_neutral_flag_default_true():
+    """FactorDef 默认做行业中性；热点类因子可显式关闭。"""
+    assert FactorDef("x", "x", ascending=False).industry_neutral is True
+    assert FactorDef("h", "h", ascending=False,
+                     industry_neutral=False).industry_neutral is False
+
+
+def test_score_factors_skips_industry_neutral_when_flag_false():
+    """industry_neutral=False 时不做行业中性 → 纯行业信号得以保留。"""
+    df = pd.DataFrame({
+        "symbol": list("abcdef"),
+        "industry": ["A", "A", "A", "B", "B", "B"],
+        "total_mv": [1e9] * 6,
+        "hot": [1.0, 1.1, 0.9, 5.0, 5.1, 4.9],   # B 行业整体更高
+    })
+    factors = {"hotspot": [FactorDef("hot", "hot", ascending=False,
+                                     industry_neutral=False)]}
+    out = score_factors(df, factors=factors)
+    a = out.set_index("symbol").loc[["a", "b", "c"], "score_hotspot"].mean()
+    b = out.set_index("symbol").loc[["d", "e", "f"], "score_hotspot"].mean()
+    assert b - a > 1.0
