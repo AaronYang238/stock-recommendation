@@ -54,3 +54,46 @@ def test_datasource_base_news_default_empty():
         def fundamentals(self, *a, **k): ...
 
     assert _Min().news("x") == []
+
+
+# ── Task 3: build_sentiment_features（AI 输入端）─────────────
+class _FakeAnalyzer:
+    """按文本关键词给情绪分（模拟 AI 输入端；不做任何选股/涨跌判断）。"""
+    def analyze_sentiment(self, texts):
+        from aselect.ai.base import SentimentResult
+        out = []
+        for t in texts:
+            s = 0.8 if "利好" in t else (-0.6 if "利空" in t else 0.0)
+            out.append(SentimentResult(sentiment=s, confidence=0.9))
+        return out
+
+
+def _news_fn(sym):
+    data = {
+        "600519": [{"text": "公司业绩利好", "date": "2026-08-15"}],
+        "000001": [{"text": "遭遇利空传闻", "date": "2026-08-15"}],
+    }
+    return data.get(sym, [])
+
+
+def test_build_sentiment_features_writes_signed_scores(tmp_path):
+    from aselect.data.sentiment import build_sentiment_features
+    store, cfg, syms = _seed(tmp_path)
+    n = build_sentiment_features(store, cfg, syms,
+                                 analyzer=_FakeAnalyzer(), news_fn=_news_fn)
+    assert n == 2
+    feats = store.get_features(["600519", "000001"]).set_index("symbol")
+    assert feats.loc["600519", "sentiment"] > 0     # 利好 → 正
+    assert feats.loc["000001", "sentiment"] < 0     # 利空 → 负
+    assert feats.loc["600519", "as_of"] == "2026-08-15"   # PIT：as_of=新闻日
+
+
+def test_build_sentiment_features_null_analyzer_neutral(tmp_path):
+    from aselect.ai.null_analyzer import NullAnalyzer
+    from aselect.data.sentiment import build_sentiment_features
+    store, cfg, syms = _seed(tmp_path)
+    build_sentiment_features(store, cfg, syms,
+                             analyzer=NullAnalyzer(), news_fn=_news_fn)
+    feats = store.get_features(["600519"])
+    if not feats.empty:                              # 写了也应是中性 0
+        assert float(feats.set_index("symbol").loc["600519", "sentiment"]) == 0.0
