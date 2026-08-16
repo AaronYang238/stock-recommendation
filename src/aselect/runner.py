@@ -147,18 +147,51 @@ def run_swing_backtest(
     start: str | None = None, end: str | None = None,
     freq: str = "W", top_n: int = 10, max_per_industry: int = 2,
     weights: dict | None = None, gate: bool = True,
-    exit_params=None, limit_pct: float = 0.095,
+    exit_params=None, limit_pct: float = 0.095, position_fn=None,
 ):
     """组合级事件驱动回测：每周刷新候选(打分→入场闸门→单行业≤2→top_n)，
-    每笔用 simulate_position 逐日离场。返回 SwingReport。
+    每笔用 position_fn 逐日离场。返回 SwingReport。
 
-    gate=False 时不做入场闸门(供消融对照)；exit_fn 可注入基线离场(供离场消融)。
+    gate=False 时不做入场闸门(供闸门消融)；position_fn 可注入基线离场(供离场消融)。
     """
     from .engine.strategy_rules import ExitParams, entry_gate
     from .engine.swing_backtest import simulate_position
     return _run_swing(store, config, start, end, freq, top_n, max_per_industry,
                       weights, gate, exit_params or ExitParams(), limit_pct,
-                      entry_gate, simulate_position)
+                      entry_gate, position_fn or simulate_position)
+
+
+def run_gate_ablation(store: Storage, config: Config, **kw) -> dict:
+    """入场闸门消融：有/无闸门的期望对比。expectancy_delta>0 即闸门带来正期望增量。"""
+    on = run_swing_backtest(store, config, gate=True, **kw)
+    off = run_swing_backtest(store, config, gate=False, **kw)
+    return {"gate_on": on, "gate_off": off,
+            "expectancy_delta": round(on.expectancy - off.expectancy, 5)}
+
+
+def run_exit_ablation(store: Storage, config: Config,
+                      fixed_pct: float = 0.08, **kw) -> dict:
+    """离场消融：吊灯移动止损 vs 涨停即清 / 固定止盈两基线的按笔盈亏比对比。"""
+    from functools import partial
+
+    from .engine.swing_backtest import (
+        simulate_position, simulate_position_fixed_take,
+        simulate_position_sell_on_limit,
+    )
+    trailing = run_swing_backtest(store, config, gate=True,
+                                  position_fn=simulate_position, **kw)
+    limit = run_swing_backtest(store, config, gate=True,
+                               position_fn=simulate_position_sell_on_limit, **kw)
+    fixed = run_swing_backtest(
+        store, config, gate=True,
+        position_fn=partial(simulate_position_fixed_take, fixed_pct=fixed_pct), **kw)
+    return {
+        "trailing": trailing, "sell_on_limit": limit, "fixed_pct": fixed,
+        "pl_ratio_delta_vs_limit": round(
+            trailing.profit_loss_ratio - limit.profit_loss_ratio, 3),
+        "pl_ratio_delta_vs_fixed": round(
+            trailing.profit_loss_ratio - fixed.profit_loss_ratio, 3),
+    }
 
 
 def _run_swing(store, config, start, end, freq, top_n, max_per_industry,

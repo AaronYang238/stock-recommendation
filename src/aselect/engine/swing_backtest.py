@@ -130,6 +130,74 @@ def _sym(frame: pd.DataFrame) -> str:
     return str(frame["symbol"].iloc[0]) if "symbol" in frame.columns else "?"
 
 
+def _costs(cost: dict) -> tuple[float, float]:
+    comm = float(cost.get("commission", 0.00025))
+    stamp = float(cost.get("stamp_tax", 0.001))
+    transfer = float(cost.get("transfer_fee", 0.00001))
+    slip = float(cost.get("slippage", 0.001))
+    return comm + transfer + slip, comm + transfer + slip + stamp
+
+
+def _mk(frame, bi, si, entry_price, exit_price, reason,
+        buy_cost, sell_cost) -> Trade:
+    ret = (exit_price / entry_price - 1) - buy_cost - sell_cost
+    return Trade(_sym(frame), frame.index[bi], frame.index[si],
+                 entry_price, float(exit_price), round(ret, 6), reason)
+
+
+# ── 消融基线离场（用户 2026-08-16 决定：两条基线都对照）──────
+def simulate_position_sell_on_limit(frame, entry_idx, cost,
+                                    exit_params: ExitParams = ExitParams(),
+                                    limit_pct: float = 0.095) -> Trade | None:
+    """基线①「涨停即清」：首次涨停收盘的次日开盘全清；否则最大持仓/末日清。"""
+    buy_cost, sell_cost = _costs(cost)
+    n = len(frame)
+    bi = _fillable_open(frame, entry_idx + 1, "buy", limit_pct)
+    if bi is None or bi >= n:
+        return None
+    entry_price = float(frame["open"].iloc[bi])
+    for k, i in enumerate(range(bi + 1, n), start=1):
+        prev = float(frame["close"].iloc[i - 1])
+        close = float(frame["close"].iloc[i])
+        if prev > 0 and close / prev - 1 >= limit_pct:            # 涨停
+            si = _fillable_open(frame, i + 1, "sell", limit_pct)
+            si = si if si is not None else n - 1
+            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
+                       "sell_on_limit", buy_cost, sell_cost)
+        if k >= exit_params.max_hold:
+            si = _fillable_open(frame, i + 1, "sell", limit_pct) or i
+            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
+                       "max_hold", buy_cost, sell_cost)
+    return _mk(frame, bi, n - 1, entry_price, float(frame["close"].iloc[-1]),
+               "eod_close", buy_cost, sell_cost)
+
+
+def simulate_position_fixed_take(frame, entry_idx, cost,
+                                 exit_params: ExitParams = ExitParams(),
+                                 limit_pct: float = 0.095,
+                                 fixed_pct: float = 0.08) -> Trade | None:
+    """基线②「固定止盈」：盈利达 fixed_pct 次日开盘全清；否则最大持仓/末日清。"""
+    buy_cost, sell_cost = _costs(cost)
+    n = len(frame)
+    bi = _fillable_open(frame, entry_idx + 1, "buy", limit_pct)
+    if bi is None or bi >= n:
+        return None
+    entry_price = float(frame["open"].iloc[bi])
+    target = entry_price * (1 + fixed_pct)
+    for k, i in enumerate(range(bi + 1, n), start=1):
+        if float(frame["close"].iloc[i]) >= target:
+            si = _fillable_open(frame, i + 1, "sell", limit_pct)
+            si = si if si is not None else n - 1
+            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
+                       "fixed_take", buy_cost, sell_cost)
+        if k >= exit_params.max_hold:
+            si = _fillable_open(frame, i + 1, "sell", limit_pct) or i
+            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
+                       "max_hold", buy_cost, sell_cost)
+    return _mk(frame, bi, n - 1, entry_price, float(frame["close"].iloc[-1]),
+               "eod_close", buy_cost, sell_cost)
+
+
 def _swing_metrics(trades: list, cost: dict, baskets: dict | None = None) -> SwingReport:
     """由逐笔交易 + 每调仓日等权篮子收益，汇总组合指标（按笔盈亏比/期望，含胜率仅参考）。"""
     n = len(trades)
