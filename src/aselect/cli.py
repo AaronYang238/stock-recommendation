@@ -246,6 +246,23 @@ def _ablation(args):
     store.close()
 
 
+def _sentiment(args):
+    """采集个股新闻 → AI 情绪分 → 结构化入库（正交因子；AI 关闭则中性，核心照跑）。"""
+    from .ai.factory import get_analyzer
+    from .data.pipeline import build_universe
+    from .data.sentiment import build_sentiment_features
+    cfg = load_config()
+    store = get_storage(cfg)
+    analyzer = get_analyzer(cfg)
+    universe = build_universe(store, include_delisted=False)
+    n = build_sentiment_features(store, cfg, universe, analyzer=analyzer)
+    print(f"[舆情] analyzer={type(analyzer).__name__} · 写入情绪特征 {n} 只")
+    if type(analyzer).__name__ == "NullAnalyzer":
+        print("（AI 未启用或缺 Key：情绪为中性，正交因子退化，不影响其它因子与回测）")
+    print(f"\n{cfg.disclaimer}")
+    store.close()
+
+
 def _notify(args):
     """把最新选股候选推送到飞书（未配置 webhook 则走 NullNotifier，仅本地打印）。"""
     import datetime as _dt
@@ -346,6 +363,9 @@ def main():
     nt = sub.add_parser("notify", help="推送最新选股候选到飞书（未配置则本地打印）")
     nt.add_argument("--top", type=int, default=10)
     nt.set_defaults(func=_notify)
+
+    se = sub.add_parser("sentiment", help="AI 舆情情绪 → 正交因子入库（AI 关则中性）")
+    se.set_defaults(func=_sentiment)
 
     args = p.parse_args()
     args.func(args)
