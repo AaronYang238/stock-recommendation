@@ -136,6 +136,14 @@ def simulate_position(frame: pd.DataFrame, entry_idx: int, exit_params,
 **2. Placeholder scan:** 各 Task 的 Step 1/3 含具体断言与最小实现方向;Task 1 显式标注「实现时逐步写出」——非占位,是逐 Step TDD 的常规展开。
 **3. Type consistency:** `Trade`/`SwingReport`/`ExitParams`/`simulate_position`/`run_swing_backtest` 跨 Task 一致;`bar` 键 `close/ma10/atr` 与 M2a 一致。
 
+## M2 完成记录(2026-08-16)
+- M2a(策略规则)+ M2b(事件驱动回测+消融)全部 TDD 落地,全仓 121 测试通过,已推送。
+- CLI 手测(合成库):`aselect swing`、`aselect ablation` 均正常出报告。
+- 消融结果(合成随机游走,无 alpha 属正常;机制方向正确):
+  - 入场闸门:期望增量 +0.0013/笔(有闸门 −0.0002 vs 无闸门 −0.0014)——闸门降低追高成本。
+  - 离场纪律:吊灯盈亏比 1.564 > 涨停即清 1.199(+0.365)> 固定+8% 1.15(+0.414)——让利润奔跑更值。
+- 已知局限:合成源无真实 alpha(期望为负属预期);真实数据下方有意义。组合净值为等权篮子近似。
+
 ## 后续(不属 M2b)
 - 样本外一次性验收薄封装(train/oos split)→ M2b 收尾或 M5。
 - 「量能确认」入场闸门(截面 turnover)→ 接入 Task 3 打分后过滤。
