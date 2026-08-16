@@ -116,6 +116,25 @@ def neutralize(s: pd.Series, industry: pd.Series | None = None,
     return resid
 
 
+def orthogonalize(y: pd.Series, X: pd.DataFrame) -> pd.Series:
+    """把因子 y 对回归元 X(各列 + 截距)做 OLS,返回残差(剔除与 X 重叠的部分)。
+
+    残差 = y 中无法被 X 线性解释的独立信息。X 为空或样本不足时原样返回。
+    结果不再标准化,由调用方决定(与 neutralize 同风格,便于组合)。
+    """
+    if X is None or X.shape[1] == 0:
+        return y
+    Xc = pd.concat([pd.Series(1.0, index=y.index, name="const"), X], axis=1).astype(float)
+    yv = y.astype(float)
+    mask = yv.notna() & Xc.notna().all(axis=1)
+    if mask.sum() < Xc.shape[1] + 2:            # 样本不足以回归 → 跳过
+        return y
+    beta, *_ = np.linalg.lstsq(Xc[mask].values, yv[mask].values, rcond=None)
+    resid = pd.Series(np.nan, index=y.index)
+    resid[mask] = yv[mask].values - Xc[mask].values @ beta
+    return resid
+
+
 def process_factor(raw: pd.Series, ascending: bool,
                    industry: pd.Series | None = None,
                    size: pd.Series | None = None) -> pd.Series:

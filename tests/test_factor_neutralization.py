@@ -6,7 +6,7 @@ import pandas as pd
 
 from aselect.datasource.synthetic_source import SyntheticSource
 from aselect.engine.factors import (
-    FactorDef, process_factor, score_factors, winsorize, zscore,
+    FactorDef, orthogonalize, process_factor, score_factors, winsorize, zscore,
 )
 
 
@@ -94,3 +94,20 @@ def test_score_factors_skips_industry_neutral_when_flag_false():
     a = out.set_index("symbol").loc[["a", "b", "c"], "score_hotspot"].mean()
     b = out.set_index("symbol").loc[["d", "e", "f"], "score_hotspot"].mean()
     assert b - a > 1.0
+
+
+def test_orthogonalize_removes_correlation_with_regressors():
+    rng = np.random.default_rng(0)
+    n = 200
+    x1 = pd.Series(rng.normal(size=n))
+    x2 = pd.Series(rng.normal(size=n))
+    y = 2 * x1 - x2 + pd.Series(rng.normal(0, 0.1, n))   # 主要由 x1/x2 解释
+    X = pd.DataFrame({"x1": x1, "x2": x2})
+    r = orthogonalize(y, X)
+    assert abs(np.corrcoef(r.values, x1.values)[0, 1]) < 0.05
+    assert abs(np.corrcoef(r.values, x2.values)[0, 1]) < 0.05
+
+
+def test_orthogonalize_empty_regressors_returns_input():
+    y = pd.Series([1.0, 2.0, 3.0])
+    pd.testing.assert_series_equal(orthogonalize(y, pd.DataFrame(index=y.index)), y)
