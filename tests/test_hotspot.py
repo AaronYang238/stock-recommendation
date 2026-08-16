@@ -56,3 +56,37 @@ def test_cross_section_has_flow_and_pctchg(tmp_path):
     for col in ("net_inflow", "turnover", "pct_chg"):
         assert col in cross.columns
     assert cross["net_inflow"].notna().any()
+
+
+# ── Task 4: 热点板块聚合器 ──────────────────────────────────
+def test_hotspot_ranks_hot_sector_above_cold():
+    cross = pd.DataFrame({
+        "symbol": list("abcdef"),
+        "industry": ["医药", "医药", "医药", "银行", "银行", "银行"],
+        "mom_60": [0.20, 0.22, 0.18, -0.02, 0.00, -0.01],       # 医药强
+        "net_inflow": [5e7, 6e7, 4e7, -1e7, 0.0, -2e7],          # 医药资金流入
+        "pct_chg": [0.10, 0.05, 0.02, 0.00, 0.01, -0.01],        # 医药有涨停
+    })
+    from aselect.data.hotspot import add_hotspot_factor
+    out = add_hotspot_factor(cross)
+    assert "hotspot" in out.columns
+    hot = out.set_index("symbol").loc[["a", "b", "c"], "hotspot"].mean()
+    cold = out.set_index("symbol").loc[["d", "e", "f"], "hotspot"].mean()
+    assert hot > cold
+
+
+def test_hotspot_is_deterministic():
+    from aselect.data.hotspot import add_hotspot_factor
+    cross = pd.DataFrame({
+        "symbol": ["a", "b"], "industry": ["医药", "银行"],
+        "mom_60": [0.2, -0.1], "net_inflow": [1e7, -1e7], "pct_chg": [0.05, -0.02],
+    })
+    pd.testing.assert_frame_equal(add_hotspot_factor(cross), add_hotspot_factor(cross))
+
+
+def test_hotspot_missing_inputs_returns_nan_column():
+    from aselect.data.hotspot import add_hotspot_factor
+    cross = pd.DataFrame({"symbol": ["a", "b"], "industry": ["医药", "银行"]})
+    out = add_hotspot_factor(cross)
+    assert "hotspot" in out.columns
+    assert out["hotspot"].isna().all()
