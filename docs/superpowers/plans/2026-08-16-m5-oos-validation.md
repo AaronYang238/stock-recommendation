@@ -60,6 +60,12 @@ def run_validated_swing(store, config, freq="W", top_n=10, max_per_industry=2,
 **2. Placeholder scan:** 各 Step 含具体断言/最小实现;无 TBD/TODO。
 **3. Type consistency:** `run_validated_swing(...)->dict{split_date,weights,train,oos}` 与既有 `run_validated_strategy` 一致;train/oos 为 `SwingReport`。
 
+## M5 完成记录(2026-08-16)
+- 2 任务 TDD 落地,全仓 144 测试通过,已推送(PR #1)。
+- `run_validated_swing`(镜像 run_validated_strategy)+ CLI `swing --oos`。
+- 手测 `swing --oos 0.7`:切分 2025-10-10,训练段 +2.05%(期望 +0.0005),样本外 −6.26%(期望 −0.0011)——正是 OOS 纪律要暴露的「训练段过拟合噪声、样本外回吐」的诚实数字。
+- 至此 spec M1–M5 全部完成。真实数字待接入 akshare 真实数据。
+
 ## 后续(spec 收官后)
 - 合成源历史季报快照 → 让训练段 IC 覆盖基本面/热点/情绪因子(当前主要是价格因子)。
 - 真实 akshare 数据接入后重跑 OOS 验收,数字方有实盘意义。
