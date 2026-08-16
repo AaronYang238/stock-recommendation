@@ -47,3 +47,12 @@ def test_storage_roundtrips_new_daily_cols(tmp_path):
     back = store.get_daily("600519", "hfq")
     assert {"turnover", "net_inflow"}.issubset(back.columns)
     assert back["net_inflow"].notna().any()
+
+
+# ── Task 3: 截面表带入 net_inflow/turnover/pct_chg ──────────
+def test_cross_section_has_flow_and_pctchg(tmp_path):
+    store, cfg = _seed_store(tmp_path)
+    cross = build_cross_section(store, cfg)
+    for col in ("net_inflow", "turnover", "pct_chg"):
+        assert col in cross.columns
+    assert cross["net_inflow"].notna().any()

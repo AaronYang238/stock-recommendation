@@ -98,6 +98,13 @@ def build_cross_section(store: Storage, config: Config,
             # 简易均线，供 close>ma60 这类筛选
             if len(daily) >= 60:
                 row["ma60"] = float(daily["close"].rolling(60).mean().iloc[-1])
+            # 热点因子所需：最近一日资金流/换手/涨跌幅（PIT：仅用 ≤as_of 的行情）
+            if "net_inflow" in daily.columns:
+                row["net_inflow"] = float(daily["net_inflow"].iloc[-1])
+            if "turnover" in daily.columns:
+                row["turnover"] = float(daily["turnover"].iloc[-1])
+            if len(daily) >= 2:
+                row["pct_chg"] = float(daily["close"].iloc[-1] / daily["close"].iloc[-2] - 1)
         price_rows.append(row)
     price = pd.DataFrame(price_rows)
 
