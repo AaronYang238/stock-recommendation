@@ -67,7 +67,13 @@ def normalize_news(raw: pd.DataFrame) -> list[dict]
 **2. Placeholder scan:** 纯函数有具体断言;`.ak` 薄包装无法离线测(已说明),靠纯函数覆盖解析逻辑。
 **3. Type consistency:** `normalize_hist/-fund_flow/-news`、`news(symbol)->list[dict]{text,date}` 与 M1/M4 既有契约一致。
 
+## 完成记录(2026-08-16)
+- 2 任务 TDD 落地,全仓 155 测试通过,已推送(PR #1)。
+- `daily()` 增 turnover(hist 自带)+ net_inflow(资金流 best-effort);`news(symbol)` 接 stock_news_em;解析逻辑抽为纯函数 `normalize_hist/-fund_flow/-news`,离线单测覆盖。
+- ⚠️ **仅离线验证解析逻辑**:akshare 未装、沙箱无稳定网络,真实拉取**未联调**。真实环境需 `pip install akshare` + 放网,跑一次 `update`/`sync` 验证字段落库(见下)。
+
 ## 后续
+- **真实环境联调(必做)**:装 akshare + 放网,`python -m aselect.cli sync` 验证 turnover/net_inflow/news 真实落库。
 - 真实财报 PIT(`stock_financial_*` 按公告日)→ 让基本面因子在真实数据下也无前视。
 - 龙虎榜事件标记(实盘信号)→ 需要时接 `stock_lhb_*`。
 - 真实环境联调(装 akshare + 放网):跑一次 `update`/`sync` 验证字段落库。
