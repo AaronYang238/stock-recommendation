@@ -94,3 +94,36 @@ def test_formatters_deterministic():
     rows = [{"symbol": "1", "name": "a", "total_score": 1.0,
              "gate_passed": True, "industry": "x"}]
     assert format_candidates(rows, "d") == format_candidates(rows, "d")
+
+
+# ── Task 4: FeishuWebhookNotifier ───────────────────────────
+def test_feishu_send_posts_expected_payload():
+    import json
+
+    from aselect.notify.feishu import FeishuWebhookNotifier
+    captured = {}
+
+    def fake_post(url, payload, timeout):
+        captured["url"] = url
+        captured["body"] = json.loads(payload.decode("utf-8"))
+        return 200, "ok"
+
+    n = FeishuWebhookNotifier("https://hook/x", post_fn=fake_post)
+    assert n.send("标题", ["行1", "行2"]) is True
+    assert captured["url"] == "https://hook/x"
+    assert captured["body"]["msg_type"] == "text"
+    text = captured["body"]["content"]["text"]
+    assert "标题" in text and "行1" in text and "行2" in text
+
+
+def test_feishu_send_returns_false_on_error():
+    from aselect.notify.feishu import FeishuWebhookNotifier
+
+    def bad_500(url, payload, timeout):
+        return 500, "err"
+
+    def raises(url, payload, timeout):
+        raise OSError("network down")
+
+    assert FeishuWebhookNotifier("u", post_fn=bad_500).send("t", ["a"]) is False
+    assert FeishuWebhookNotifier("u", post_fn=raises).send("t", ["a"]) is False
