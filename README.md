@@ -12,7 +12,7 @@
 ## 架构（四层）
 
 ```
-数据源层(akshare/tushare/合成) → 数据层(采集/清洗/存储) → 引擎层[确定性核心] → 应用层(Django API + React)
+数据源层(akshare/tushare/合成) → 数据层(采集/清洗/存储) → 引擎层[确定性核心] → 应用层(命令行 CLI + 通知)
                                        ▲AI接入点①            ▲AI接入点②(仅边缘)     ▲AI接入点③
 ```
 
@@ -23,22 +23,21 @@
 | `aselect.data` | 采集、清洗、截面因子表构建 |
 | `aselect.engine` | **确定性核心**：indicators / factors / screener / backtest |
 | `aselect.ai` | 热插拔 AI：`AIAnalyzer` 抽象 + 工厂 + `NullAnalyzer` 降级 + 各适配器 |
-| `backend/` | Django + DRF，把上面核心封装成 REST API（不含业务 ORM，数据仍走 aselect.storage） |
-| `frontend/` | React + Vite + TypeScript 单页前端，消费 `/api`，含板块/状态标注与 ⓘ 术语提示 |
+| `aselect.notify` | 通知外壳：`Notifier` 抽象 + `FeishuWebhookNotifier` + `NullNotifier` 回退 |
+| `aselect.cli` / `aselect.scheduler` | 命令行入口 + 收盘后自动 sync 调度守护 |
 
-> `aselect` 核心与表现层解耦：Django 只是 REST 外壳，React 只是视图，两条铁律仍由核心保证。
+> 本项目为**纯命令行工具**（无 Web 前后端）：表现层即 CLI 与通知外壳，两条铁律仍由确定性核心保证。
 
 ## 一键启动（推荐）
 
-自动建 venv、装依赖、建配置、灌离线数据，并同时拉起后端(:8000)与前端(:9090)，`Ctrl+C` 一并停止：
+自动建 venv、装依赖、建配置、灌离线合成数据，并打印常用 CLI 命令：
 
 ```bash
 bash scripts/start.sh            # Linux / macOS（首次会装依赖，稍慢）
-#   pwsh scripts/start.ps1       # Windows / PowerShell
 #   bash scripts/start.sh --no-seed   # 已灌真实数据时跳过合成数据
 ```
 
-打开 `http://localhost:9090` 即可。需要真实数据再单独 `python -m aselect.cli update`（见下）。
+之后 `source .venv/bin/activate`，即可用 `python -m aselect.cli <命令>`（见下）。接真实数据用 `python -m aselect.cli update`。
 
 ## 快速开始（手动分步）
 
@@ -70,45 +69,33 @@ python -m aselect.cli backtest 600519    # 单只回测（含 A 股交易摩擦�
 > - **tushare（付费积分）**：注册 → `export TUSHARE_TOKEN=...` → `primary: tushare`。
 >   `daily_basic`/`fina_indicator` 等接口需较高积分（通常需年费赞助）。
 
-## Web 界面（React + Django）
-
-需要两个进程：后端 Django(:8000) 提供 API，前端 Vite(:9090) 提供页面并把 `/api` 代理到后端。
+## 命令一览
 
 ```bash
-# 后端（终端 1）：复用上面的 venv，已 pip install -e .
-pip install -r backend/requirements.txt        # django + djangorestframework
-python backend/manage.py migrate                # 初始化 Django 框架自身的占位库
-python backend/manage.py runserver 8000
-
-# 前端（终端 2）：需 Node 18+
-cd frontend
-npm install
-npm run dev                                     # 打开 http://localhost:9090
+python -m aselect.cli seed                  # 离线合成数据填库（不联网、可复现）
+python -m aselect.cli update --limit N      # 收盘后增量拉真实数据（重试+容错）
+python -m aselect.cli sync                  # 全量同步（列表→日线→基本面+行业→基准指数）
+python -m aselect.cli screen --top 10       # 多因子打分 + 条件筛选
+python -m aselect.cli backtest 600519       # 单只回测（MA 交叉，含 A 股摩擦）
+python -m aselect.cli factor-ic             # 单因子 walk-forward IC 研究
+python -m aselect.cli strategy --oos 0.7    # 股票池级样本外回测（月度调仓）
+python -m aselect.cli swing --top 10        # 事件驱动周级摆动回测（入场闸门+移动止损）
+python -m aselect.cli swing --oos 0.7       # 摆动回测样本外一次性验收
+python -m aselect.cli ablation              # 消融对照：追高/过早止盈两大风险量化成钱
+python -m aselect.cli notify                # 飞书推送候选（未配置则本地打印）
+python -m aselect.cli sentiment             # AI 舆情情绪 → 正交因子入库（AI 关则中性）
+python -m aselect.scheduler                 # 调度守护：交易日收盘后自动 sync
 ```
 
-打开 `http://localhost:9090`：
+## 常驻调度（个人自用）
 
-- **个股查询**：输入任意股票代码 + 起止日期，查看指定区间内的 **K 线（蜡烛图，红涨绿跌）+ MA20/MA60**。
-- **候选股**：表格带板块/状态分类与表头 ⓘ 术语提示，点选个股看 K 线、回测与 AI 报告。
-- **策略回测**：股票池级 walk-forward 多因子回测，设持仓数/调仓频率，看策略净值 vs 基准曲线与 IC/超额/夏普/盈亏比等指标。
-- **每日推荐·战绩**：每个交易日 `sync` 自动落库 top-N 推荐，事后回填 5/20 日真实前向收益，用表现证明高回报。
-- **因子/策略研究**：单因子 IC 表 + 样本外(hold-out)验证。
-
-API 端点：`/api/meta`、`/api/health`、`/api/candidates`、`/api/stocks/<code>/daily?start=&end=`、`/api/stocks/<code>/backtest|report`、`/api/strategy/backtest`、`/api/research/report`、`/api/recommendations`(+`/performance`)。
-
-## 生产部署（个人自用，常驻）
-
-单端口、单源（gunicorn 跑 API + whitenoise 托管前端构建产物），并用 systemd 守护 Web 与调度：
+用 systemd 守护调度进程，交易日收盘后自动 `sync`（拉数据 → 重算因子快照 → 生成当日推荐 → 回填历史战绩）：
 
 ```bash
-bash scripts/serve.sh                    # 构建前端 + gunicorn 起 0.0.0.0:9090（API+前端同源）
-# 端口可改：PORT=9091 bash scripts/serve.sh（默认 9090，在常见放行段内）
-# 常驻自启：编辑 deploy/*.service 里的路径后
-sudo cp deploy/aselect-web.service deploy/aselect-scheduler.service /etc/systemd/system/
-sudo systemctl enable --now aselect-web aselect-scheduler
+# 编辑 deploy/aselect-scheduler.service 里的路径后：
+sudo cp deploy/aselect-scheduler.service /etc/systemd/system/
+sudo systemctl enable --now aselect-scheduler
 ```
-
-`aselect-scheduler` 每个交易日收盘后自动 `sync`（拉数据 → 重算因子快照 → 生成当日推荐 → 回填历史战绩）。生产态 `DEBUG=0`、`DJANGO_SECRET_KEY`/`DJANGO_ALLOWED_HOSTS` 走环境变量。
 
 ## 启用 AI（可选，默认关闭）
 
@@ -134,17 +121,17 @@ pytest          # 含：核心无 LLM 依赖、优雅降级、可复现、防注
 - [x] 4. AI 骨架：`AIAnalyzer` + 工厂 + 配置 + `NullAnalyzer` 降级（接入点①②③）
 - [x] 5. 多因子打分排序（价值/成长/质量/动量/低波动）
 - [x] 历史退市/ST 标的补全：合并沪/深退市接口 + 按名称识别 ST，股票池三态(L/ST/D)避免幸存者偏差
-- [x] 荐股板块标注：按代码前缀标注主板/创业板/科创板/北交所（CLI 与 Web 均显示，可按板块筛选）
-- [x] Web 术语悬浮解释：专有名词右上角 ⓘ，悬停显示通俗描述（词典见 `aselect.glossary`）
-- [x] 服务化：Django + DRF 后端 + React/Vite/TS 前端，替代 Streamlit（核心 `aselect` 不变）
-- [x] 个股查询：按代码 + 起止日期查指定区间 K 线（蜡烛图 + MA20/MA60），`daily` 接口支持 `start/end`
+- [x] 荐股板块标注：按代码前缀标注主板/创业板/科创板/北交所（可按板块筛选）
+- [x] 纯命令行化：移除 Web 前后端（Django/DRF + React/Vite），表现层收敛到 `aselect.cli` / `aselect.scheduler`，确定性核心 `aselect` 不变
 - [x] 因子中性化：去极值 + Z-score + 行业/市值中性（OLS 残差），`total_score` 为中性化 Z 值
-- [x] Point-in-time 防前视：基本面/特征带披露日 `ann_date`，截面按 `as_of` 只取已披露数据（`candidates` 接口支持 `as_of`）
-- [x] 股票池级 walk-forward 多因子回测：含 A 股摩擦/T+1/涨跌停无法成交/基准对比，报告 IC·ICIR·夏普·盈亏比·期望值·超额；逐期 PIT 防前视、池含退市/ST（`strategy` 命令 + `/api/strategy/backtest`）
+- [x] Point-in-time 防前视：基本面/特征带披露日 `ann_date`，截面按 `as_of` 只取已披露数据
+- [x] 股票池级 walk-forward 多因子回测：含 A 股摩擦/T+1/涨跌停无法成交/基准对比，报告 IC·ICIR·夏普·盈亏比·期望值·超额；逐期 PIT 防前视、池含退市/ST（`strategy` 命令）
 - [x] 真实财务/行业/披露日接入：akshare 行业（板块成分→symbol 映射）；**tushare 适配器补全**（`daily_basic` 估值 + `fina_indicator` 的 ROE/毛利率/同比 + 公告日 `ann_date`），为被封网环境提供可用数据路径与真实 PIT 财务
 - [x] 数据自动化（整改阶段一）：`sync` 全量同步（列表→日线→基本面+行业→**真实沪深300基准入库**）；APScheduler 调度守护收盘后自动跑；tushare 适配器改批量+限频+退市；`/api/meta` 显示数据新鲜度
-- [x] 收益验证（整改阶段二）：单因子 walk-forward IC 研究（IC 均值/ICIR/IC胜率/分层多空/衰减，`factor-ic`）；按 IC 聚合类别权重；**样本外(hold-out)纪律**（`strategy --oos`：训练段拟合权重、样本外只测一次）；`/api/research/report` + 前端「因子/策略研究」面板
-- [x] 生产高可用 + 推荐战绩（整改阶段三）：每日推荐落库 + **事后前向收益跟踪**（5/20 日，`recommendations` 表 + `/api/recommendations`+`/performance` + 前端「每日推荐·战绩」面板）；`factor_snapshot` 缓存让 `/api/candidates` 免每请求重扫；`/api/health` 健康检查；SQLite WAL；gunicorn+whitenoise 单源生产部署（`scripts/serve.sh` + systemd 单元）
+- [x] 收益验证（整改阶段二）：单因子 walk-forward IC 研究（IC 均值/ICIR/IC胜率/分层多空/衰减，`factor-ic`）；按 IC 聚合类别权重；**样本外(hold-out)纪律**（`strategy --oos`：训练段拟合权重、样本外只测一次）
+- [x] 推荐战绩：每日推荐落库 + **事后前向收益跟踪**（5/20 日，`recommendations` 表）；`factor_snapshot` 缓存；SQLite WAL
+- [x] 中波段右侧策略子系统：热点因子、反追高入场闸门、反卖飞移动止损、事件驱动周级回测 + 消融对照、样本外验收、飞书通知、AI 舆情正交因子（`swing`/`ablation`/`notify`/`sentiment`；详见 `docs/superpowers/`）
+- [x] 飞书通知推送（候选/离场/风险预警，配置驱动，缺 webhook 回退 NullNotifier）
 - [ ] 监控预警推送（邮件/Telegram/企业微信）— 待接
 - [ ] 6. NL 筛选与 AI 报告接入真实 Key 联调
 - [ ] 接入点①：舆情/公告 情绪与事件因子（爬取/拉取财经文本 → AI 落地为因子）— 见下方「规划」，**暂不实现**
