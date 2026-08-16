@@ -10,6 +10,7 @@ from ..datasource import DataSource
 from ..engine.factors import add_price_factors
 from ..storage import Storage
 from .clean import clean_daily
+from .hotspot import add_hotspot_factor
 from .symbols import classify_board, status_label
 
 log = logging.getLogger(__name__)
@@ -98,6 +99,13 @@ def build_cross_section(store: Storage, config: Config,
             # 简易均线，供 close>ma60 这类筛选
             if len(daily) >= 60:
                 row["ma60"] = float(daily["close"].rolling(60).mean().iloc[-1])
+            # 热点因子所需：最近一日资金流/换手/涨跌幅（PIT：仅用 ≤as_of 的行情）
+            if "net_inflow" in daily.columns:
+                row["net_inflow"] = float(daily["net_inflow"].iloc[-1])
+            if "turnover" in daily.columns:
+                row["turnover"] = float(daily["turnover"].iloc[-1])
+            if len(daily) >= 2:
+                row["pct_chg"] = float(daily["close"].iloc[-1] / daily["close"].iloc[-2] - 1)
         price_rows.append(row)
     price = pd.DataFrame(price_rows)
 
@@ -118,4 +126,7 @@ def build_cross_section(store: Storage, config: Config,
     cross = cross.merge(meta, on="symbol", how="left")
     cross["board"] = cross["symbol"].map(classify_board)
     cross["status_label"] = cross["status"].map(status_label)
+
+    # 热点因子（板块聚合，正交因子；缺输入列时该列记 NaN）
+    cross = add_hotspot_factor(cross)
     return cross

@@ -206,6 +206,88 @@ def _strategy(args):
     store.close()
 
 
+def _swing(args):
+    """事件驱动·周级摆动回测：反追高入场闸门 + 反卖飞移动止损，日级逐仓离场。"""
+    from .runner import run_swing_backtest
+    cfg = load_config()
+    store = get_storage(cfg)
+    rep = run_swing_backtest(store, cfg, freq=args.freq, top_n=args.top,
+                             max_per_industry=args.max_per_industry, gate=not args.no_gate)
+    print(f"\n[摆动回测] 调仓 {args.freq} · top{args.top} · 单行业≤{args.max_per_industry} · "
+          f"入场闸门 {'关' if args.no_gate else '开'}")
+    print(f"  交易笔数 {rep.n_trades} | 总收益 {rep.total_return:.2%} | "
+          f"夏普 {rep.sharpe} | 最大回撤 {rep.max_drawdown:.2%}")
+    print(f"  期望值 {rep.expectancy:.4f}/笔 | 盈亏比 {rep.profit_loss_ratio} | "
+          f"胜率(仅参考) {rep.win_rate:.0%}")
+    print(f"\n{cfg.disclaimer}")
+    store.close()
+
+
+def _ablation(args):
+    """消融对照：把「追高」与「过早止盈」两大风险量化成钱。"""
+    from .runner import run_exit_ablation, run_gate_ablation
+    cfg = load_config()
+    store = get_storage(cfg)
+    g = run_gate_ablation(store, cfg, freq=args.freq, top_n=args.top,
+                          max_per_industry=args.max_per_industry)
+    print("\n[消融①·反追高入场闸门] 期望对比：")
+    print(f"  有闸门 期望 {g['gate_on'].expectancy:.4f}/笔（{g['gate_on'].n_trades}笔）"
+          f" | 无闸门 期望 {g['gate_off'].expectancy:.4f}/笔（{g['gate_off'].n_trades}笔）")
+    print(f"  → 期望增量 {g['expectancy_delta']:+.4f}（>0 即闸门降低了追高成本）")
+    e = run_exit_ablation(store, cfg, freq=args.freq, top_n=args.top,
+                          max_per_industry=args.max_per_industry, fixed_pct=args.fixed_pct)
+    print("\n[消融②·反卖飞离场纪律] 按笔盈亏比对比：")
+    print(f"  吊灯移动止损 {e['trailing'].profit_loss_ratio} | "
+          f"涨停即清 {e['sell_on_limit'].profit_loss_ratio} | "
+          f"固定+{args.fixed_pct:.0%} {e['fixed_pct'].profit_loss_ratio}")
+    print(f"  → 盈亏比增量 vs 涨停即清 {e['pl_ratio_delta_vs_limit']:+.3f} | "
+          f"vs 固定止盈 {e['pl_ratio_delta_vs_fixed']:+.3f}（>0 即让利润奔跑更值）")
+    print(f"\n{cfg.disclaimer}")
+    store.close()
+
+
+def _sentiment(args):
+    """采集个股新闻 → AI 情绪分 → 结构化入库（正交因子；AI 关闭则中性，核心照跑）。"""
+    from .ai.factory import get_analyzer
+    from .data.pipeline import build_universe
+    from .data.sentiment import build_sentiment_features
+    cfg = load_config()
+    store = get_storage(cfg)
+    analyzer = get_analyzer(cfg)
+    universe = build_universe(store, include_delisted=False)
+    n = build_sentiment_features(store, cfg, universe, analyzer=analyzer)
+    print(f"[舆情] analyzer={type(analyzer).__name__} · 写入情绪特征 {n} 只")
+    if type(analyzer).__name__ == "NullAnalyzer":
+        print("（AI 未启用或缺 Key：情绪为中性，正交因子退化，不影响其它因子与回测）")
+    print(f"\n{cfg.disclaimer}")
+    store.close()
+
+
+def _notify(args):
+    """把最新选股候选推送到飞书（未配置 webhook 则走 NullNotifier，仅本地打印）。"""
+    import datetime as _dt
+
+    from .notify import build_notifier
+    from .notify.base import NullNotifier
+    from .notify.messages import format_candidates
+    from .runner import latest_candidates
+    cfg = load_config()
+    store = get_storage(cfg)
+    rows = latest_candidates(store, cfg, top_n=args.top)
+    today = _dt.date.today().strftime("%Y-%m-%d")
+    title, lines = format_candidates(rows, today)
+    print(title)
+    for ln in lines:
+        print("  " + ln)
+    notifier = build_notifier(cfg)
+    if isinstance(notifier, NullNotifier):
+        print("（未配置飞书 webhook，跳过发送；设置环境变量并在 config 开启 notify 即可推送）")
+    else:
+        print("已发送到飞书" if notifier.send(title, lines) else "飞书发送失败（见日志）")
+    print(f"\n{cfg.disclaimer}")
+    store.close()
+
+
 def _backtest(args):
     cfg = load_config()
     store = get_storage(cfg)
@@ -262,6 +344,28 @@ def main():
     stg.add_argument("--oos", type=float, default=0.0,
                      help="样本外比例(如0.7)：训练段拟合IC权重，样本外段只测一次")
     stg.set_defaults(func=_strategy)
+
+    sw = sub.add_parser("swing", help="事件驱动·周级摆动回测（入场闸门+移动止损）")
+    sw.add_argument("--top", type=int, default=10)
+    sw.add_argument("--freq", default="W", help="候选刷新频率：W/M 或整数交易日")
+    sw.add_argument("--max-per-industry", type=int, default=2, dest="max_per_industry")
+    sw.add_argument("--no-gate", action="store_true", help="关闭入场闸门")
+    sw.set_defaults(func=_swing)
+
+    ab = sub.add_parser("ablation", help="消融对照：追高/过早止盈两大风险量化成钱")
+    ab.add_argument("--top", type=int, default=10)
+    ab.add_argument("--freq", default="W")
+    ab.add_argument("--max-per-industry", type=int, default=2, dest="max_per_industry")
+    ab.add_argument("--fixed-pct", type=float, default=0.08, dest="fixed_pct",
+                    help="固定止盈基线阈值（默认+8%）")
+    ab.set_defaults(func=_ablation)
+
+    nt = sub.add_parser("notify", help="推送最新选股候选到飞书（未配置则本地打印）")
+    nt.add_argument("--top", type=int, default=10)
+    nt.set_defaults(func=_notify)
+
+    se = sub.add_parser("sentiment", help="AI 舆情情绪 → 正交因子入库（AI 关则中性）")
+    se.set_defaults(func=_sentiment)
 
     args = p.parse_args()
     args.func(args)

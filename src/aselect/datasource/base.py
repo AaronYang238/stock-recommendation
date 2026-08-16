@@ -37,3 +37,10 @@ class DataSource(ABC):
     def industry_map(self) -> dict[str, str]:
         """symbol → 行业 映射（供因子行业中性化）。默认空，子类可实现。"""
         return {}
+
+    def news(self, symbol: str) -> list[dict]:
+        """个股新闻/公告文本（供 AI 舆情情绪因子的输入端）。
+
+        每条 {"text": str, "date": "YYYY-MM-DD"}。默认空，子类可接真实新闻源。
+        """
+        return []

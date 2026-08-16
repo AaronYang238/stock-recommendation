@@ -21,6 +21,7 @@ class FactorDef:
     field: str          # 取自基本面/特征表的列名
     ascending: bool     # True=值越小越好（如 PE），处理后取负以统一"大=好"
     weight: float = 1.0
+    industry_neutral: bool = True   # False=跳过行业中性（如热点因子，避免板块信息自我抵消）
 
 
 # 默认因子库：方向遵循常识（低估值/高成长/高质量/低波动优先）
@@ -44,6 +45,14 @@ DEFAULT_FACTORS: dict[str, list[FactorDef]] = {
     ],
     "lowvol": [
         FactorDef("vol_60", "vol_60", ascending=True),
+    ],
+    "hotspot": [
+        # 热点因子：跳过行业中性（否则板块信息自我抵消），仅市值中性
+        FactorDef("hotspot", "hotspot", ascending=False, industry_neutral=False),
+    ],
+    "sentiment": [
+        # AI 舆情正交因子：情绪越高越好；数值列由 data 层产出，engine 只读数值（无 LLM）
+        FactorDef("sentiment", "sentiment", ascending=False),
     ],
 }
 
@@ -149,7 +158,8 @@ def score_factors(
             continue
         sub = pd.DataFrame(index=out.index)
         for d in present:
-            sub[d.name] = process_factor(out[d.field], d.ascending, industry, size) * d.weight
+            ind = industry if d.industry_neutral else None
+            sub[d.name] = process_factor(out[d.field], d.ascending, ind, size) * d.weight
         denom = sum(d.weight for d in present)
         cat_scores[cat] = sub.sum(axis=1) / denom
         out[f"score_{cat}"] = cat_scores[cat].round(4)

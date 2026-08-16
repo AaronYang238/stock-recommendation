@@ -25,6 +25,26 @@ def test_sma_matches_rolling_mean():
                                expected.dropna().values, rtol=1e-6)
 
 
+def test_atr_matches_wilder_definition():
+    closes = list(np.linspace(10, 30, 60))
+    out = add_indicators(_df(closes))
+    assert "atr14" in out.columns
+    atr = out["atr14"].dropna()
+    assert (atr > 0).all()
+    assert atr.notna().sum() >= len(closes) - 20
+
+
+def test_atr_zero_when_flat():
+    closes = [20.0] * 40
+    df = pd.DataFrame({
+        "date": pd.bdate_range("2020-01-01", periods=40).strftime("%Y-%m-%d"),
+        "open": closes, "high": closes, "low": closes, "close": closes,
+        "volume": [1e6] * 40,
+    })
+    out = add_indicators(df)
+    assert float(out["atr14"].dropna().iloc[-1]) == 0.0
+
+
 def test_rsi_bounds():
     rng = np.random.default_rng(0)
     closes = list(100 + np.cumsum(rng.normal(0, 1, 200)))

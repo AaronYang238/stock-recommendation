@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS daily (
     adjust  TEXT NOT NULL,    -- none / qfq / hfq
     open    REAL, high REAL, low REAL, close REAL,
     volume  REAL, amount REAL,
+    turnover REAL,               -- 换手率(%)
+    net_inflow REAL,             -- 资金净流入(元)，供热点因子/实盘信号
     PRIMARY KEY (symbol, date, adjust)
 );
 CREATE INDEX IF NOT EXISTS idx_daily_symbol ON daily(symbol, adjust);
@@ -115,7 +117,10 @@ class SQLiteStorage(Storage):
 
     def _migrate(self) -> None:
         """对已存在的旧库补加后来新增的列（CREATE TABLE IF NOT EXISTS 不会改表）。"""
-        wanted = {"fundamentals": [("industry", "TEXT"), ("ann_date", "TEXT")]}
+        wanted = {
+            "fundamentals": [("industry", "TEXT"), ("ann_date", "TEXT")],
+            "daily": [("turnover", "REAL"), ("net_inflow", "REAL")],
+        }
         for table, cols in wanted.items():
             existing = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
             for name, typ in cols:
@@ -140,7 +145,7 @@ class SQLiteStorage(Storage):
         out["symbol"] = symbol
         out["adjust"] = adjust
         cols = ["symbol", "date", "adjust", "open", "high", "low",
-                "close", "volume", "amount"]
+                "close", "volume", "amount", "turnover", "net_inflow"]
         out = out[[c for c in cols if c in out.columns]]
         self._upsert("daily", out, ["symbol", "date", "adjust"])
 

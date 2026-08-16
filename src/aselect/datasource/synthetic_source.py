@@ -75,11 +75,14 @@ class SyntheticSource(DataSource):
         low = close * (1 - np.abs(rng.normal(0, 0.01, len(dates))))
         open_ = (high + low) / 2
         volume = rng.integers(5e5, 5e7, len(dates)).astype(float)
+        turnover = np.abs(rng.normal(3.0, 1.5, len(dates))).round(2)      # 换手率 %
+        net_inflow = (rng.normal(0, 1, len(dates)) * volume * close * 0.01).round(0)  # 资金净流入(元)
         df = pd.DataFrame({
             "date": dates.strftime("%Y-%m-%d"),
             "open": open_.round(2), "high": high.round(2),
             "low": low.round(2), "close": close.round(2),
             "volume": volume, "amount": (volume * close).round(0),
+            "turnover": turnover, "net_inflow": net_inflow,
         })
         if start:
             df = df[df["date"] >= start]
@@ -111,3 +114,6 @@ class SyntheticSource(DataSource):
 
     def index_daily(self, index_code, start=None, end=None) -> pd.DataFrame:
         return self.daily(f"IDX{index_code}", "none", start, end)
+
+    def news(self, symbol: str) -> list[dict]:
+        return []       # 离线合成源无新闻；情绪因子退化为中性（核心照跑）
