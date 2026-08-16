@@ -6,7 +6,7 @@ import pandas as pd
 
 from aselect.datasource.synthetic_source import SyntheticSource
 from aselect.engine.factors import (
-    FactorDef, process_factor, score_factors, winsorize, zscore,
+    FactorDef, orthogonalize, process_factor, score_factors, winsorize, zscore,
 )
 
 
@@ -94,3 +94,41 @@ def test_score_factors_skips_industry_neutral_when_flag_false():
     a = out.set_index("symbol").loc[["a", "b", "c"], "score_hotspot"].mean()
     b = out.set_index("symbol").loc[["d", "e", "f"], "score_hotspot"].mean()
     assert b - a > 1.0
+
+
+def test_orthogonalize_removes_correlation_with_regressors():
+    rng = np.random.default_rng(0)
+    n = 200
+    x1 = pd.Series(rng.normal(size=n))
+    x2 = pd.Series(rng.normal(size=n))
+    y = 2 * x1 - x2 + pd.Series(rng.normal(0, 0.1, n))   # 主要由 x1/x2 解释
+    X = pd.DataFrame({"x1": x1, "x2": x2})
+    r = orthogonalize(y, X)
+    assert abs(np.corrcoef(r.values, x1.values)[0, 1]) < 0.05
+    assert abs(np.corrcoef(r.values, x2.values)[0, 1]) < 0.05
+
+
+def test_orthogonalize_empty_regressors_returns_input():
+    y = pd.Series([1.0, 2.0, 3.0])
+    pd.testing.assert_series_equal(orthogonalize(y, pd.DataFrame(index=y.index)), y)
+
+
+def test_score_factors_orthogonalizes_sentiment_against_base():
+    """sentiment=2*roe+独立部分：正交后 score_sentiment 与 score_quality 近乎不相关。"""
+    rng = np.random.default_rng(1)
+    n = 150
+    roe = rng.normal(size=n)
+    indep = rng.normal(size=n)
+    df = pd.DataFrame({
+        "symbol": [str(i) for i in range(n)],
+        "industry": rng.choice(["A", "B", "C"], n),
+        "total_mv": rng.uniform(50e8, 5000e8, n),
+        "roe": roe,
+        "sentiment": 2 * roe + indep,
+    })
+    out = score_factors(df).set_index("symbol")
+    c = np.corrcoef(out["score_sentiment"], out["score_quality"])[0, 1]
+    assert abs(c) < 0.15                    # 与基础因子(quality/roe)重叠部分被剔除
+    assert out["total_score"].notna().all()
+    # 仍保留独立信息：与 indep 正相关（经中性化管线后被稀释，但方向为正、未被抹平）
+    assert np.corrcoef(out["score_sentiment"], indep)[0, 1] > 0.05

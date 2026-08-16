@@ -17,7 +17,52 @@ _ADJUST_MAP = {"none": "", "qfq": "qfq", "hfq": "hfq"}
 _HIST_COLS = {
     "日期": "date", "开盘": "open", "最高": "high", "最低": "low",
     "收盘": "close", "成交量": "volume", "成交额": "amount",
+    "换手率": "turnover",
 }
+
+
+# ── 列名规范化（纯函数，离线可测；不 import akshare、不触网）────
+def normalize_hist(raw: pd.DataFrame) -> pd.DataFrame:
+    """akshare stock_zh_a_hist 原始帧 → 统一 schema（含 turnover 若上游有）。"""
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=list(_HIST_COLS.values()))
+    df = raw.rename(columns=_HIST_COLS)
+    keep = [c for c in _HIST_COLS.values() if c in df.columns]
+    df = df[keep].copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+    return df.reset_index(drop=True)
+
+
+def normalize_fund_flow(raw: pd.DataFrame) -> pd.DataFrame:
+    """akshare 个股资金流 原始帧 → [date, net_inflow]（主力净流入-净额）。"""
+    if raw is None or raw.empty or "日期" not in raw.columns:
+        return pd.DataFrame(columns=["date", "net_inflow"])
+    col = "主力净流入-净额"
+    if col not in raw.columns:
+        return pd.DataFrame(columns=["date", "net_inflow"])
+    out = pd.DataFrame({
+        "date": pd.to_datetime(raw["日期"]).dt.strftime("%Y-%m-%d"),
+        "net_inflow": pd.to_numeric(raw[col], errors="coerce"),
+    })
+    return out.reset_index(drop=True)
+
+
+def normalize_news(raw: pd.DataFrame) -> list[dict]:
+    """akshare stock_news_em 原始帧 → [{text, date}]。标题优先，回退内容。"""
+    if raw is None or raw.empty:
+        return []
+    title_col = next((c for c in ("新闻标题", "标题", "新闻内容") if c in raw.columns), None)
+    time_col = next((c for c in ("发布时间", "时间", "publish_time") if c in raw.columns), None)
+    if title_col is None or time_col is None:
+        return []
+    out = []
+    for _, r in raw.iterrows():
+        text = str(r[title_col]).strip()
+        if not text:
+            continue
+        out.append({"text": text,
+                    "date": pd.to_datetime(r[time_col]).strftime("%Y-%m-%d")})
+    return out
 
 
 def _retry(fn, retry: int, backoff: float):
@@ -115,13 +160,21 @@ class AkshareSource(DataSource):
             kwargs["start_date"] = start.replace("-", "")
         if end:
             kwargs["end_date"] = end.replace("-", "")
-        df = _retry(lambda: self.ak.stock_zh_a_hist(**kwargs), self.retry, self.backoff)
-        if df is None or df.empty:
-            return pd.DataFrame(columns=list(_HIST_COLS.values()))
-        df = df.rename(columns=_HIST_COLS)
-        keep = [c for c in _HIST_COLS.values() if c in df.columns]
-        df = df[keep]
-        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+        raw = _retry(lambda: self.ak.stock_zh_a_hist(**kwargs), self.retry, self.backoff)
+        df = normalize_hist(raw)
+        if df.empty:
+            return df
+        # best-effort：个股资金流（近期）→ net_inflow，按 date 左连接；失效则跳过
+        try:
+            flow_raw = _retry(
+                lambda: self.ak.stock_individual_fund_flow(
+                    stock=symbol, market=self._exchange_of(symbol).lower()),
+                self.retry, self.backoff)
+            flow = normalize_fund_flow(flow_raw)
+            if not flow.empty:
+                df = df.merge(flow, on="date", how="left")
+        except Exception:  # noqa: BLE001 — 资金流接口失效不影响行情
+            pass
         return df
 
     def fundamentals(self, symbols=None) -> pd.DataFrame:
@@ -151,6 +204,18 @@ class AkshareSource(DataSource):
         if end:
             df = df[df["date"] <= end]
         return df
+
+    def news(self, symbol: str) -> list[dict]:
+        """个股新闻（stock_news_em）→ [{text, date}]，供 AI 舆情情绪因子输入端。
+
+        接口/网络失效时返回 []（情绪因子退化为中性，核心照跑）。
+        """
+        try:
+            raw = _retry(lambda: self.ak.stock_news_em(symbol=symbol),
+                         self.retry, self.backoff)
+        except Exception:  # noqa: BLE001 — 新闻接口易随上游改版失效
+            return []
+        return normalize_news(raw)
 
     def industry_map(self) -> dict[str, str]:
         """遍历东方财富行业板块 → 成分股，建 symbol→行业 映射。

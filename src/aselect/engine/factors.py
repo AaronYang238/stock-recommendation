@@ -22,6 +22,7 @@ class FactorDef:
     ascending: bool     # True=值越小越好（如 PE），处理后取负以统一"大=好"
     weight: float = 1.0
     industry_neutral: bool = True   # False=跳过行业中性（如热点因子，避免板块信息自我抵消）
+    orthogonalize: bool = False     # True=对基础因子做残差正交化（如热点/情绪，只留独立增量）
 
 
 # 默认因子库：方向遵循常识（低估值/高成长/高质量/低波动优先）
@@ -47,12 +48,13 @@ DEFAULT_FACTORS: dict[str, list[FactorDef]] = {
         FactorDef("vol_60", "vol_60", ascending=True),
     ],
     "hotspot": [
-        # 热点因子：跳过行业中性（否则板块信息自我抵消），仅市值中性
-        FactorDef("hotspot", "hotspot", ascending=False, industry_neutral=False),
+        # 热点因子：跳过行业中性（否则板块信息自我抵消），仅市值中性；对基础因子残差正交化
+        FactorDef("hotspot", "hotspot", ascending=False,
+                  industry_neutral=False, orthogonalize=True),
     ],
     "sentiment": [
-        # AI 舆情正交因子：情绪越高越好；数值列由 data 层产出，engine 只读数值（无 LLM）
-        FactorDef("sentiment", "sentiment", ascending=False),
+        # AI 舆情正交因子：情绪越高越好；数值列由 data 层产出，engine 只读数值（无 LLM）；正交化
+        FactorDef("sentiment", "sentiment", ascending=False, orthogonalize=True),
     ],
 }
 
@@ -116,6 +118,25 @@ def neutralize(s: pd.Series, industry: pd.Series | None = None,
     return resid
 
 
+def orthogonalize(y: pd.Series, X: pd.DataFrame) -> pd.Series:
+    """把因子 y 对回归元 X(各列 + 截距)做 OLS,返回残差(剔除与 X 重叠的部分)。
+
+    残差 = y 中无法被 X 线性解释的独立信息。X 为空或样本不足时原样返回。
+    结果不再标准化,由调用方决定(与 neutralize 同风格,便于组合)。
+    """
+    if X is None or X.shape[1] == 0:
+        return y
+    Xc = pd.concat([pd.Series(1.0, index=y.index, name="const"), X], axis=1).astype(float)
+    yv = y.astype(float)
+    mask = yv.notna() & Xc.notna().all(axis=1)
+    if mask.sum() < Xc.shape[1] + 2:            # 样本不足以回归 → 跳过
+        return y
+    beta, *_ = np.linalg.lstsq(Xc[mask].values, yv[mask].values, rcond=None)
+    resid = pd.Series(np.nan, index=y.index)
+    resid[mask] = yv[mask].values - Xc[mask].values @ beta
+    return resid
+
+
 def process_factor(raw: pd.Series, ascending: bool,
                    industry: pd.Series | None = None,
                    size: pd.Series | None = None) -> pd.Series:
@@ -152,6 +173,7 @@ def score_factors(
     size = out[size_col] if size_col in out.columns else None
 
     cat_scores: dict[str, pd.Series] = {}
+    orth_flag: dict[str, bool] = {}
     for cat, defs in factors.items():
         present = [d for d in defs if d.field in out.columns]
         if not present:
@@ -162,11 +184,22 @@ def score_factors(
             sub[d.name] = process_factor(out[d.field], d.ascending, ind, size) * d.weight
         denom = sum(d.weight for d in present)
         cat_scores[cat] = sub.sum(axis=1) / denom
-        out[f"score_{cat}"] = cat_scores[cat].round(4)
+        orth_flag[cat] = all(d.orthogonalize for d in present)
 
     if not cat_scores:
         out["total_score"] = 0.0
         return out
+
+    # 残差正交化：正交类别(热点/情绪)对基础类别得分矩阵取残差，只留独立增量（spec §5.1/§5.2）
+    base_cats = [c for c in cat_scores if not orth_flag[c]]
+    if base_cats:
+        X = pd.DataFrame({c: cat_scores[c] for c in base_cats})
+        for c in cat_scores:
+            if orth_flag[c]:
+                cat_scores[c] = zscore(orthogonalize(cat_scores[c], X)).fillna(0.0)
+
+    for cat, score in cat_scores.items():
+        out[f"score_{cat}"] = score.round(4)
 
     w = weights or {c: 1.0 for c in cat_scores}
     total = pd.Series(0.0, index=out.index)
