@@ -156,6 +156,24 @@ def _price_panel(store: Storage, symbols, adjust, start, end) -> pd.DataFrame:
     return pd.DataFrame(series).sort_index()
 
 
+def _ohlc_frames(store: Storage, symbols, adjust, start, end) -> dict:
+    """每 symbol 一张按日期索引、含技术指标（ma/rsi/atr…）的 OHLC 表。
+
+    供事件驱动周级回测的入场闸门与逐仓离场逐日读取。空表跳过。
+    """
+    from .engine.indicators import add_indicators
+    frames: dict = {}
+    for sym in symbols:
+        d = store.get_daily(sym, adjust, start=start, end=end)
+        if d.empty:
+            continue
+        d = d.sort_values("date").reset_index(drop=True)
+        ind = add_indicators(d)
+        ind.index = pd.to_datetime(d["date"])
+        frames[sym] = ind
+    return frames
+
+
 def _rebalance_dates(index: pd.DatetimeIndex, freq: str) -> list:
     """调仓日：'M'/'W'=每月/每周最后一个交易日；整数 N=每 N 个交易日。"""
     idx = pd.DatetimeIndex(index)
