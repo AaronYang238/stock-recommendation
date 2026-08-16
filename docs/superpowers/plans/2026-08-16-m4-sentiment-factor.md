@@ -111,6 +111,13 @@ def build_sentiment_features(store, config, symbols, *, analyzer=None,
 **2. Placeholder scan:** 各 Task Step 含具体断言与最小实现方向;无 TBD/TODO。
 **3. Type consistency:** `FactorDef("sentiment","sentiment",...)`、`news(symbol)->list[dict]`、`build_sentiment_features(store,config,symbols,*,analyzer,news_fn)->int`、features 列 `sentiment/confidence/as_of` 跨 Task 一致。
 
+## M4 完成记录(2026-08-16)
+- 5 个任务全部 TDD 落地,全仓 142 测试通过,已推送。
+- 复用既有 ai/(analyzer+NullAnalyzer+工厂)、features 表、build_cross_section 合并;新增:sentiment 因子注册、`news(symbol)` 接口、`data/sentiment.py`(`build_sentiment_features`)、CLI `sentiment`。
+- AI 只在 `data/sentiment.py` 输入端调用,产 [-1,1] 情绪分 + 置信度 → 置信度加权聚合 → 按新闻日 as_of 入库(防前视);engine 只读数值列,`test_no_llm_in_core` 通过。
+- 手测:AI 关闭 → NullAnalyzer,合成源无新闻 → 写 0 只,核心照跑(热插拔铁律)。
+- 已知局限:真实 akshare 新闻抓取(network)未接;情绪单因子历史 IC 需真实/合成历史新闻(与 M1 遗留历史快照一并);当前用标准中性化近似「正交」,真正残差正交化留作研究增强。
+
 ## 后续(不属 M4)
 - 真实 akshare 新闻抓取(`AkshareSource.news`,网络)→ 接入真实数据阶段。
 - 情绪对已有因子的**真正残差正交化**(当前用标准行业/市值中性近似)→ 多因子研究增强。
