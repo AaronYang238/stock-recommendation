@@ -154,6 +154,12 @@ class FeishuWebhookNotifier(Notifier):
 **2. Placeholder scan:** 各 Task Step 含具体断言与最小实现;无 TBD/TODO。
 **3. Type consistency:** `Notifier.send(title, lines)`、`build_notifier(config)`、三个 `format_*`、`FeishuWebhookNotifier(webhook_url, timeout_s, post_fn)`、`latest_candidates(...)->list[dict]` 跨 Task 一致。
 
+## M3 完成记录(2026-08-16)
+- 5 个任务全部 TDD 落地,全仓 135 测试通过,已推送。
+- 通知层 `aselect/notify/`:Notifier 抽象 + NullNotifier 回退 + FeishuWebhookNotifier(传输可注入)+ 三类消息格式化 + 工厂,约 150 行,零 DSA 依赖、无 LLM。
+- `NotifyConfig`(webhook 走环境变量);CLI `notify` 手测:未配置→NullNotifier 本地打印候选(含闸门状态),实盘候选剔除已退市。
+- 顺带修正:`latest_candidates` 排除 status=='D'(退市股属回测池,不进实盘推送)。
+
 ## 后续(不属 M3)
 - 离场提醒/风险预警接入实盘每日流程(sync 后自动推送)→ 调度集成阶段。
 - 多渠道(企业微信/Telegram)→ 需要时按同一 Notifier 抽象扩展。
