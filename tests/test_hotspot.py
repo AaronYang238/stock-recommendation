@@ -121,6 +121,19 @@ def test_hotspot_included_in_factor_ic_orchestration(tmp_path):
     assert math.isfinite(reports["hotspot"].ic_mean)
 
 
+def test_historical_fundamentals_unlock_ic(tmp_path):
+    """合成源历史季报快照就位后：基本面因子(roe)与依赖行业的热点因子获得历史 IC。
+
+    此前合成源仅今日单快照，PIT 历史模式下基本面/行业缺失 → 这些因子 n==0。
+    多期季报后 run_factor_research 能算出非空 IC，industry_neutral 标志随之可观测。
+    """
+    from aselect.runner import run_factor_research
+    store, cfg = _seed_store(tmp_path)
+    reports = run_factor_research(store, cfg, freq="M")
+    assert reports["roe"].n > 0                 # 基本面因子历史 IC 解锁
+    assert reports["hotspot"].n > 0             # 依赖 industry 的热点因子历史 IC 解锁
+
+
 def test_hotspot_chain_produces_valid_ic_when_data_present():
     """端到端链路(add_hotspot_factor → process_factor(跳过行业中性) → summarize)在
     数据齐备时应产出有效、非空、方向正确的 IC 序列——不经合成源 PIT 财报瓶颈的真实验证。
