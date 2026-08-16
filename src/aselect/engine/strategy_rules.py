@@ -48,3 +48,61 @@ def entry_gate(bars: pd.DataFrame, params: GateParams = GateParams()) -> GateRes
         "rsi_ok": pd.isna(last["rsi14"]) or float(last["rsi14"]) <= params.rsi_overheat,
     }
     return GateResult(passed=all(checks.values()), checks=checks)
+
+
+# ── 反卖飞离场纪律（逐仓状态机）────────────────────────────
+@dataclass(frozen=True)
+class ExitParams:
+    chandelier_k: float = 3.0      # 吊灯止损：最高收盘 − k×ATR
+    hard_stop_atr: float = 2.0     # 硬止损：入场价 − n×ATR（初始风险 R=hard_stop_atr×ATR）
+    trend_ma: int = 10             # 跌破 MA10 趋势离场
+    scale_out_R: float = 2.0       # 盈利达 2R 分批
+    scale_out_frac: float = 0.5    # 减仓比例
+    max_hold: int = 20             # 最大持仓交易日
+
+
+@dataclass
+class PositionState:
+    entry_price: float
+    atr_at_entry: float
+    highest_close: float
+    days_held: int = 0
+    scaled_out: bool = False
+    remaining: float = 1.0
+
+
+@dataclass
+class ExitDecision:
+    action: str        # "none" | "scale_out" | "exit"
+    reason: str = ""
+    fraction: float = 0.0
+
+
+def evaluate_exit(state: PositionState, bar: dict,
+                  params: ExitParams = ExitParams()) -> ExitDecision:
+    """推进持仓一日（更新最高收盘/持仓天数），按优先级返回离场决策。
+
+    优先级：hard_stop > trailing_stop > trend_break > scale_out > max_hold。
+    bar：当日 {"close", "ma10", "atr"}。纯确定性，无副作用外泄（仅改传入 state）。
+    """
+    close = float(bar["close"])
+    atr = float(bar.get("atr") or state.atr_at_entry)
+    state.days_held += 1
+    state.highest_close = max(state.highest_close, close)
+    R = params.hard_stop_atr * state.atr_at_entry     # 初始风险
+
+    if close <= state.entry_price - R:
+        return ExitDecision("exit", "hard_stop")
+    if close <= state.highest_close - params.chandelier_k * atr:
+        return ExitDecision("exit", "trailing_stop")
+    ma10 = bar.get("ma10")
+    if ma10 is not None and pd.notna(ma10) and close < float(ma10):
+        return ExitDecision("exit", "trend_break")
+    if (not state.scaled_out
+            and close >= state.entry_price + params.scale_out_R * R):
+        state.scaled_out = True
+        state.remaining = round(state.remaining - params.scale_out_frac, 6)
+        return ExitDecision("scale_out", "target_2R", params.scale_out_frac)
+    if state.days_held >= params.max_hold:
+        return ExitDecision("exit", "max_hold")
+    return ExitDecision("none")
