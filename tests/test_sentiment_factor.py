@@ -97,3 +97,31 @@ def test_build_sentiment_features_null_analyzer_neutral(tmp_path):
     feats = store.get_features(["600519"])
     if not feats.empty:                              # 写了也应是中性 0
         assert float(feats.set_index("symbol").loc["600519", "sentiment"]) == 0.0
+
+
+# ── Task 4: 端到端（入库 → 截面 → 打分）─────────────────────
+def test_sentiment_feature_flows_into_scoring(tmp_path):
+    from aselect.data.pipeline import build_cross_section
+    from aselect.data.sentiment import build_sentiment_features
+    from aselect.engine.factors import score_factors
+    store, cfg, syms = _seed(tmp_path)
+    build_sentiment_features(store, cfg, syms,
+                             analyzer=_FakeAnalyzer(), news_fn=_news_fn)
+    cross = build_cross_section(store, cfg)
+    assert "sentiment" in cross.columns
+    scored = score_factors(cross).set_index("symbol")
+    # 利好的 600519 情绪分应高于利空的 000001
+    assert scored.loc["600519", "score_sentiment"] > scored.loc["000001", "score_sentiment"]
+
+
+def test_sentiment_disabled_path_core_runs(tmp_path):
+    """ai.enabled=false 走真实工厂(NullAnalyzer)：不产出正情绪，打分照常跑。"""
+    from aselect.data.pipeline import build_cross_section
+    from aselect.data.sentiment import build_sentiment_features
+    from aselect.engine.factors import score_factors
+    store, cfg, syms = _seed(tmp_path)          # cfg.ai.enabled=False
+    build_sentiment_features(store, cfg, syms, news_fn=_news_fn)   # analyzer=None → 工厂
+    cross = build_cross_section(store, cfg)
+    scored = score_factors(cross)
+    assert "total_score" in scored.columns
+    assert scored["total_score"].notna().all()
