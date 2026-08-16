@@ -39,12 +39,26 @@ class AIConfig:
 
 
 @dataclass(frozen=True)
+class NotifyConfig:
+    """通知层配置（配置驱动·热插拔）。webhook URL 只从环境变量读，禁止落配置/代码。"""
+    enabled: bool = False
+    channel: str = "feishu"
+    webhook_url_env: str = "FEISHU_WEBHOOK"
+    timeout_s: int = 5
+
+    @property
+    def webhook_url(self) -> str | None:
+        return os.environ.get(self.webhook_url_env) or None
+
+
+@dataclass(frozen=True)
 class Config:
     app: dict[str, Any]
     datasource: dict[str, Any]
     storage: dict[str, Any]
     backtest: dict[str, Any]
     ai: AIConfig
+    notify: NotifyConfig = field(default_factory=NotifyConfig)
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -80,12 +94,20 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
         cache_dir=_abs_under_root(ai_raw.get("cache_dir", ".cache/ai")),
         features=dict(ai_raw.get("features", {}) or {}),
     )
+    nt_raw = raw.get("notify", {}) or {}
+    notify = NotifyConfig(
+        enabled=bool(nt_raw.get("enabled", False)),
+        channel=str(nt_raw.get("channel", "feishu")),
+        webhook_url_env=str(nt_raw.get("webhook_url_env", "FEISHU_WEBHOOK")),
+        timeout_s=int(nt_raw.get("timeout_s", 5)),
+    )
     return Config(
         app=raw.get("app", {}) or {},
         datasource=raw.get("datasource", {}) or {},
         storage=storage,
         backtest=raw.get("backtest", {}) or {},
         ai=ai,
+        notify=notify,
         raw=raw,
     )
 
