@@ -50,6 +50,10 @@ DEFAULT_FACTORS: dict[str, list[FactorDef]] = {
         # 热点因子：跳过行业中性（否则板块信息自我抵消），仅市值中性
         FactorDef("hotspot", "hotspot", ascending=False, industry_neutral=False),
     ],
+    "sentiment": [
+        # AI 舆情正交因子：情绪越高越好；数值列由 data 层产出，engine 只读数值（无 LLM）
+        FactorDef("sentiment", "sentiment", ascending=False),
+    ],
 }
 
 # 中性化默认所用列
