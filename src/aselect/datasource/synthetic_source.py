@@ -114,3 +114,6 @@ class SyntheticSource(DataSource):
 
     def index_daily(self, index_code, start=None, end=None) -> pd.DataFrame:
         return self.daily(f"IDX{index_code}", "none", start, end)
+
+    def news(self, symbol: str) -> list[dict]:
+        return []       # 离线合成源无新闻；情绪因子退化为中性（核心照跑）

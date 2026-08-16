@@ -38,3 +38,19 @@ def test_sentiment_registered_and_scored():
     assert "score_sentiment" in out.columns
     s = out.set_index("symbol")["score_sentiment"]
     assert s["a"] > s["b"]        # 情绪高 → 分高
+
+
+# ── Task 2: 数据源 news 接口 ────────────────────────────────
+def test_synthetic_news_empty():
+    assert SyntheticSource().news("600519") == []
+
+
+def test_datasource_base_news_default_empty():
+    from aselect.datasource.base import DataSource
+
+    class _Min(DataSource):
+        def list_symbols(self): ...
+        def daily(self, *a, **k): ...
+        def fundamentals(self, *a, **k): ...
+
+    assert _Min().news("x") == []
