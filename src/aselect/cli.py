@@ -208,9 +208,24 @@ def _strategy(args):
 
 def _swing(args):
     """事件驱动·周级摆动回测：反追高入场闸门 + 反卖飞移动止损，日级逐仓离场。"""
-    from .runner import run_swing_backtest
+    from .runner import run_swing_backtest, run_validated_swing
     cfg = load_config()
     store = get_storage(cfg)
+
+    if args.oos:                       # 样本外纪律：训练段拟合权重，样本外只测一次
+        v = run_validated_swing(store, cfg, freq=args.freq, top_n=args.top,
+                                max_per_industry=args.max_per_industry, oos_split=args.oos)
+        if "error" in v:
+            print(v["error"]); store.close(); return
+        w = ", ".join(f"{k}:{x:.2f}" for k, x in v["weights"].items())
+        print(f"\n[摆动·样本外验证] 切分日 {v['split_date']} | 训练段拟合 IC 权重: {w}")
+        for tag, rep in (("训练段", v["train"]), ("样本外(只测一次)", v["oos"])):
+            print(f"  [{tag}] 交易 {rep.n_trades} 笔 | 总收益 {rep.total_return:.2%}"
+                  f" | 夏普 {rep.sharpe} | 最大回撤 {rep.max_drawdown:.2%}"
+                  f" | 期望 {rep.expectancy:.4f}/笔 | 盈亏比 {rep.profit_loss_ratio}")
+        print(f"\n{cfg.disclaimer}")
+        store.close(); return
+
     rep = run_swing_backtest(store, cfg, freq=args.freq, top_n=args.top,
                              max_per_industry=args.max_per_industry, gate=not args.no_gate)
     print(f"\n[摆动回测] 调仓 {args.freq} · top{args.top} · 单行业≤{args.max_per_industry} · "
@@ -350,6 +365,8 @@ def main():
     sw.add_argument("--freq", default="W", help="候选刷新频率：W/M 或整数交易日")
     sw.add_argument("--max-per-industry", type=int, default=2, dest="max_per_industry")
     sw.add_argument("--no-gate", action="store_true", help="关闭入场闸门")
+    sw.add_argument("--oos", type=float, default=0.0,
+                    help="样本外比例(如0.7)：训练段拟合IC权重，样本外段只测一次")
     sw.set_defaults(func=_swing)
 
     ab = sub.add_parser("ablation", help="消融对照：追高/过早止盈两大风险量化成钱")
