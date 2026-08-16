@@ -161,6 +161,34 @@ def run_swing_backtest(
                       entry_gate, position_fn or simulate_position)
 
 
+def run_validated_swing(store: Storage, config: Config, freq: str = "W",
+                        top_n: int = 10, max_per_industry: int = 2,
+                        oos_split: float = 0.7) -> dict:
+    """摆动回测的样本外纪律（铁律3）：训练段拟合 IC 权重，**样本外段只测一次**。
+
+    返回 {split_date, weights, train, oos}；oos 为对外头条指标（禁止在其上反复调参）。
+    """
+    adjust = config.datasource.get("adjust", "hfq")
+    universe = build_universe(store, include_delisted=True)
+    panel = _price_panel(store, universe, adjust, None, None)
+    schedule = _rebalance_dates(panel.index, freq)
+    if len(schedule) < 4:
+        return {"error": "样本太短，无法切分训练/样本外。"}
+    k = max(1, int(len(schedule) * oos_split))
+    split_date = pd.Timestamp(schedule[k]).strftime("%Y-%m-%d")
+
+    train_reports = run_factor_research(store, config, freq=freq, end=split_date)
+    weights = ic_category_weights(train_reports)
+
+    train = run_swing_backtest(store, config, freq=freq, top_n=top_n,
+                               max_per_industry=max_per_industry,
+                               weights=weights, end=split_date)
+    oos = run_swing_backtest(store, config, freq=freq, top_n=top_n,
+                             max_per_industry=max_per_industry,
+                             weights=weights, start=split_date)
+    return {"split_date": split_date, "weights": weights, "train": train, "oos": oos}
+
+
 def run_gate_ablation(store: Storage, config: Config, **kw) -> dict:
     """入场闸门消融：有/无闸门的期望对比。expectancy_delta>0 即闸门带来正期望增量。"""
     on = run_swing_backtest(store, config, gate=True, **kw)

@@ -106,3 +106,23 @@ def test_run_swing_backtest_single_industry_cap(tmp_path):
     store, cfg = _seed(tmp_path)
     rep = run_swing_backtest(store, cfg, freq="W", top_n=8, max_per_industry=2)
     assert rep.n_trades > 0   # 编排跑通；集中度约束由实现保证
+
+
+# ── M5: 样本外一次性验收 ─────────────────────────────────────
+def test_run_validated_swing_splits_train_and_oos(tmp_path):
+    from aselect.engine.swing_backtest import SwingReport
+    from aselect.runner import run_validated_swing
+    store, cfg = _seed(tmp_path)
+    v = run_validated_swing(store, cfg, freq="W", top_n=5, oos_split=0.7)
+    assert set(v) >= {"split_date", "weights", "train", "oos"}
+    assert isinstance(v["train"], SwingReport) and isinstance(v["oos"], SwingReport)
+    assert np.isfinite(v["oos"].expectancy)
+
+
+def test_run_validated_swing_deterministic(tmp_path):
+    from aselect.runner import run_validated_swing
+    store, cfg = _seed(tmp_path)
+    a = run_validated_swing(store, cfg, freq="W", top_n=5, oos_split=0.7)
+    b = run_validated_swing(store, cfg, freq="W", top_n=5, oos_split=0.7)
+    assert a["split_date"] == b["split_date"]
+    assert a["oos"].expectancy == b["oos"].expectancy
