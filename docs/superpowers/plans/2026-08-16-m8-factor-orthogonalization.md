@@ -53,6 +53,11 @@
 **2. Placeholder scan:** 各 Step 含断言/最小实现;无 TBD/TODO。
 **3. Type consistency:** `orthogonalize(y,X)->Series`、`FactorDef(...,orthogonalize=False)` 跨 Task 一致。
 
+## 完成记录(2026-08-16)
+- 2 任务 TDD 落地,全仓 158 测试通过,已推送(PR #1)。
+- `orthogonalize(y,X)` 纯函数 + `FactorDef.orthogonalize`;score_factors 把热点/情绪对基础类别得分残差化 + 重标准化。
+- 验证:sentiment=2*roe+indep 时,正交后 score_sentiment 与 score_quality 相关≈0(<0.15),独立部分方向为正未被抹平;既有情绪/热点/回测测试全绿。
+
 ## 后续
 - 情绪/热点单因子在正交化后重验 IC(需历史新闻夹具)。
 - 真实财报 PIT(需真实环境,见 m7 计划)。
