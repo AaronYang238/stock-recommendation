@@ -88,7 +88,8 @@ def run_factor_research(store: Storage, config: Config, factors: dict | None = N
             for t, cross in cross_by_t.items():
                 if cross.empty or d.field not in cross.columns:
                     continue
-                ind = cross["industry"] if "industry" in cross.columns else None
+                ind = (cross["industry"] if d.industry_neutral
+                       and "industry" in cross.columns else None)
                 size = cross["total_mv"] if "total_mv" in cross.columns else None
                 proc = process_factor(cross[d.field], d.ascending, ind, size)
                 sbd[t] = pd.Series(proc.values, index=cross["symbol"].values)
