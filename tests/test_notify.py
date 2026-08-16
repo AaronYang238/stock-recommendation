@@ -4,6 +4,19 @@ from __future__ import annotations
 from aselect.config import AIConfig, Config, NotifyConfig, load_config
 
 
+def _seed_store(tmp_path):
+    from aselect.data.pipeline import update_daily, update_symbols
+    from aselect.datasource.synthetic_source import SyntheticSource
+    from aselect.storage.sqlite_store import SQLiteStorage
+    store = SQLiteStorage(str(tmp_path / "n.sqlite"))
+    ds = SyntheticSource(days=220)
+    update_symbols(ds, store)
+    syms = ds._all_symbols()
+    update_daily(ds, store, syms, "hfq")
+    store.upsert_fundamentals(ds.fundamentals(syms))
+    return store
+
+
 def _cfg(notify: NotifyConfig | None = None) -> Config:
     kw = dict(app={}, datasource={"adjust": "hfq"}, storage={},
               backtest={}, ai=AIConfig())
@@ -127,3 +140,34 @@ def test_feishu_send_returns_false_on_error():
 
     assert FeishuWebhookNotifier("u", post_fn=bad_500).send("t", ["a"]) is False
     assert FeishuWebhookNotifier("u", post_fn=raises).send("t", ["a"]) is False
+
+
+# ── Task 5: 候选采集 + 端到端推送 ───────────────────────────
+def test_latest_candidates(tmp_path):
+    from aselect.runner import latest_candidates
+    store = _seed_store(tmp_path)
+    rows = latest_candidates(store, _cfg(), top_n=5)
+    assert len(rows) > 0
+    for r in rows:
+        assert "symbol" in r and isinstance(r["gate_passed"], bool)
+
+
+def test_candidates_push_end_to_end(tmp_path):
+    import json
+
+    from aselect.notify.feishu import FeishuWebhookNotifier
+    from aselect.notify.messages import format_candidates
+    from aselect.runner import latest_candidates
+    store = _seed_store(tmp_path)
+    rows = latest_candidates(store, _cfg(), top_n=5)
+    captured = {}
+
+    def fake_post(url, payload, timeout):
+        captured["body"] = json.loads(payload.decode("utf-8"))
+        return 200, "ok"
+
+    title, lines = format_candidates(rows, "2026-08-16")
+    ok = FeishuWebhookNotifier("u", post_fn=fake_post).send(title, lines)
+    assert ok is True
+    text = captured["body"]["content"]["text"]
+    assert any(r["symbol"] in text for r in rows)

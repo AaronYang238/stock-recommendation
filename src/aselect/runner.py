@@ -262,6 +262,36 @@ def _select_candidates(scored, tradable, frames, t, top_n, max_per_industry,
     return picks
 
 
+def latest_candidates(store: Storage, config: Config, top_n: int = 10) -> list:
+    """最新截面：打分排序取 top_n，并标注每只是否通过反追高入场闸门（供通知层）。
+
+    返回 [{symbol, name, total_score, gate_passed, industry}]。纯读，无副作用。
+    """
+    from .engine.strategy_rules import entry_gate
+
+    adjust = config.datasource.get("adjust", "hfq")
+    universe = build_universe(store, include_delisted=True)
+    cross = build_cross_section(store, config, symbols=universe)   # as_of=None → 最新
+    if cross.empty:
+        return []
+    if "status" in cross.columns:                     # 实盘候选剔除已退市（回测池才含退市）
+        cross = cross[cross["status"] != "D"]
+    scored = score_factors(cross).head(top_n)
+    frames = _ohlc_frames(store, list(scored["symbol"]), adjust, None, None)
+    rows = []
+    for _, r in scored.iterrows():
+        sym = r["symbol"]
+        fr = frames.get(sym)
+        passed = bool(entry_gate(fr).passed) if fr is not None and len(fr) >= 21 else False
+        rows.append({
+            "symbol": sym, "name": r.get("name", ""),
+            "total_score": float(r.get("total_score", 0.0)),
+            "gate_passed": passed,
+            "industry": r.get("industry", "-") if pd.notna(r.get("industry", None)) else "-",
+        })
+    return rows
+
+
 # ── 数据准备 ──────────────────────────────────────────────
 def _price_panel(store: Storage, symbols, adjust, start, end) -> pd.DataFrame:
     """宽表：index=日期, columns=symbol, 值=后复权收盘。"""

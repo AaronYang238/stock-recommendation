@@ -50,3 +50,10 @@ ai:
     event_extraction: true
     nl_to_filter: false
     report_generation: true
+
+# ── 通知（配置驱动·热插拔；未启用或缺 webhook 时回退 NullNotifier）──
+notify:
+  enabled: false          # 全局开关；false 时核心照跑，仅本地打印候选
+  channel: feishu         # 目前支持 feishu
+  webhook_url_env: FEISHU_WEBHOOK  # webhook URL 只从环境变量读，禁止写入配置/仓库
+  timeout_s: 5

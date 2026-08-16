@@ -246,6 +246,31 @@ def _ablation(args):
     store.close()
 
 
+def _notify(args):
+    """把最新选股候选推送到飞书（未配置 webhook 则走 NullNotifier，仅本地打印）。"""
+    import datetime as _dt
+
+    from .notify import build_notifier
+    from .notify.base import NullNotifier
+    from .notify.messages import format_candidates
+    from .runner import latest_candidates
+    cfg = load_config()
+    store = get_storage(cfg)
+    rows = latest_candidates(store, cfg, top_n=args.top)
+    today = _dt.date.today().strftime("%Y-%m-%d")
+    title, lines = format_candidates(rows, today)
+    print(title)
+    for ln in lines:
+        print("  " + ln)
+    notifier = build_notifier(cfg)
+    if isinstance(notifier, NullNotifier):
+        print("（未配置飞书 webhook，跳过发送；设置环境变量并在 config 开启 notify 即可推送）")
+    else:
+        print("已发送到飞书" if notifier.send(title, lines) else "飞书发送失败（见日志）")
+    print(f"\n{cfg.disclaimer}")
+    store.close()
+
+
 def _backtest(args):
     cfg = load_config()
     store = get_storage(cfg)
@@ -317,6 +342,10 @@ def main():
     ab.add_argument("--fixed-pct", type=float, default=0.08, dest="fixed_pct",
                     help="固定止盈基线阈值（默认+8%）")
     ab.set_defaults(func=_ablation)
+
+    nt = sub.add_parser("notify", help="推送最新选股候选到飞书（未配置则本地打印）")
+    nt.add_argument("--top", type=int, default=10)
+    nt.set_defaults(func=_notify)
 
     args = p.parse_args()
     args.func(args)
