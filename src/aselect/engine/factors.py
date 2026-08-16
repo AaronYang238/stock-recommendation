@@ -46,6 +46,10 @@ DEFAULT_FACTORS: dict[str, list[FactorDef]] = {
     "lowvol": [
         FactorDef("vol_60", "vol_60", ascending=True),
     ],
+    "hotspot": [
+        # 热点因子：跳过行业中性（否则板块信息自我抵消），仅市值中性
+        FactorDef("hotspot", "hotspot", ascending=False, industry_neutral=False),
+    ],
 }
 
 # 中性化默认所用列

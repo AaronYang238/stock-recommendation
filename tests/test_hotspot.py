@@ -90,3 +90,14 @@ def test_hotspot_missing_inputs_returns_nan_column():
     out = add_hotspot_factor(cross)
     assert "hotspot" in out.columns
     assert out["hotspot"].isna().all()
+
+
+# ── Task 5: 注册热点因子并接入截面表 ───────────────────────
+def test_hotspot_registered_and_scored_end_to_end(tmp_path):
+    from aselect.engine.factors import DEFAULT_FACTORS, score_factors
+    store, cfg = _seed_store(tmp_path)
+    cross = build_cross_section(store, cfg)
+    assert "hotspot" in cross.columns
+    assert "hotspot" in DEFAULT_FACTORS
+    scored = score_factors(cross)
+    assert "score_hotspot" in scored.columns

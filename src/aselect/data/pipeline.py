@@ -10,6 +10,7 @@ from ..datasource import DataSource
 from ..engine.factors import add_price_factors
 from ..storage import Storage
 from .clean import clean_daily
+from .hotspot import add_hotspot_factor
 from .symbols import classify_board, status_label
 
 log = logging.getLogger(__name__)
@@ -125,4 +126,7 @@ def build_cross_section(store: Storage, config: Config,
     cross = cross.merge(meta, on="symbol", how="left")
     cross["board"] = cross["symbol"].map(classify_board)
     cross["status_label"] = cross["status"].map(status_label)
+
+    # 热点因子（板块聚合，正交因子；缺输入列时该列记 NaN）
+    cross = add_hotspot_factor(cross)
     return cross
