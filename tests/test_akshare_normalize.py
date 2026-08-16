@@ -42,3 +42,21 @@ def test_normalize_fund_flow_maps_net_inflow():
     assert list(out.columns) == ["date", "net_inflow"]
     assert out["net_inflow"].iloc[0] == 1.2e7
     assert out["date"].iloc[1] == "2026-08-15"
+
+
+# ── Task 2: 新闻 ─────────────────────────────────────────────
+def test_normalize_news_maps_text_and_date():
+    raw = pd.DataFrame({
+        "新闻标题": ["公司发布业绩预增公告", "  "],
+        "新闻内容": ["详情...", "x"],
+        "发布时间": ["2026-08-15 09:30:00", "2026-08-14 15:00:00"],
+    })
+    out = normalize_news(raw)
+    assert out[0] == {"text": "公司发布业绩预增公告", "date": "2026-08-15"}
+    assert all("date" in n and "text" in n for n in out)
+    assert len(out) == 1          # 空白标题被跳过
+
+
+def test_normalize_news_empty_or_bad_columns():
+    assert normalize_news(pd.DataFrame()) == []
+    assert normalize_news(pd.DataFrame({"x": [1]})) == []

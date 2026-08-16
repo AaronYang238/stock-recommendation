@@ -205,6 +205,18 @@ class AkshareSource(DataSource):
             df = df[df["date"] <= end]
         return df
 
+    def news(self, symbol: str) -> list[dict]:
+        """个股新闻（stock_news_em）→ [{text, date}]，供 AI 舆情情绪因子输入端。
+
+        接口/网络失效时返回 []（情绪因子退化为中性，核心照跑）。
+        """
+        try:
+            raw = _retry(lambda: self.ak.stock_news_em(symbol=symbol),
+                         self.retry, self.backoff)
+        except Exception:  # noqa: BLE001 — 新闻接口易随上游改版失效
+            return []
+        return normalize_news(raw)
+
     def industry_map(self) -> dict[str, str]:
         """遍历东方财富行业板块 → 成分股，建 symbol→行业 映射。
 
