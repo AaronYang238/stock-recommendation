@@ -89,3 +89,14 @@ def gate_oversold_rsi(bars, params=OversoldParams()) -> GateResult:
 - 左侧本质更依赖"猜底"，与用户已确认的"不预测只应对"框架相悖，因此**本线定位研究，不承诺能实盘**。
 - 超卖信号在低波绩优池里可能很少（Run A 信号稀疏），需在报告里标注交易数。
 - 若样本外结果无效/方向不稳，按用户铁律**不强行上线**，存档即可。
+
+## 10. 实现记录（2026-08-21 落地）
+
+- **新增** `strategy_rules.OversoldParams` + `gate_oversold_rsi`（RSI<30 触发，纯函数，确定性核心）。
+- **新增** `runner.run_leftside_backtest(pool='broad'|'filtered')` + `_leftside_symbols`（broad=非科创非ST含退市；filtered=None 沿用右侧因子池）。
+- **新增** CLI `leftside` 子命令：Run B(放开池) + Run A(右侧同池) + 右侧原线对照。
+- **Run B 篮子收敛**：broad 默认 `top_n=30`（每周最超卖前 30 只篮子），不取全市场每只超卖股——那会产出几十万笔交易、4GB 机器 OOM。
+- **修复既有 bug** `data.pipeline.build_cross_section`：PIT 模式下 base 原本只保留"有已披露基本面的票"，基本面稀疏时截面塌缩成十几只、全宇宙被误丢。改为保留全部符号、基本面 left-merge 补 NaN。
+- **性能优化** `build_cross_section`：新增可选 `frames` 参数，回测循环复用已加载的全量行情，避免每周对全宇宙重读 2.4GB daily 表。
+- 窗口建议 `2024-01-01 ~ 2026-08-18`（PIT 基本面在近两年有效；更早时段 ROE/PE 覆盖不足，Run A 退化为纯价格因子选择）。
+- 测试：`tests/test_strategy_rules.py` 新增 4 个 gate_oversold_rsi 用例；相关文件 24+ 用例全过。
