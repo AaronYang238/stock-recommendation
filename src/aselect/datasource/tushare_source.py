@@ -15,17 +15,23 @@ class TushareSource(DataSource):
     name = "tushare"
 
     def __init__(self, retry: int = 3, retry_backoff_s: float = 2.0,
-                 min_interval_s: float = 0.31):
+                 min_interval_s: float = 0.5, timeout_s: float = 30.0):
+        import socket
         import time as _t
         import tushare as ts  # 延迟导入
+        # 关键健壮性：HTTP 调用不设超时会永久挂起（本服务器代理路径曾出现）
+        socket.setdefaulttimeout(timeout_s)
         token = os.environ.get("TUSHARE_TOKEN")
         if not token:
             raise RuntimeError("缺少环境变量 TUSHARE_TOKEN")
         ts.set_token(token)
         self.pro = ts.pro_api()
+        api_url = os.environ.get("TUSHARE_HTTP_URL")  # 第三方代理端点(可选)
+        if api_url:
+            self.pro._DataApi__http_url = api_url
         self.retry = retry
         self.backoff = retry_backoff_s
-        self._min_interval = min_interval_s   # 限频：约 ≤200 次/分
+        self._min_interval = min_interval_s   # 限频：0.5s ≈ ≤120 次/分（< 第三方150限流，留余量）
         self._last_call = 0.0
         self._t = _t
 

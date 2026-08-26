@@ -50,6 +50,102 @@ def entry_gate(bars: pd.DataFrame, params: GateParams = GateParams()) -> GateRes
     return GateResult(passed=all(checks.values()), checks=checks)
 
 
+@dataclass(frozen=True)
+class PullbackParams:
+    """规则 A「回踩 MA20 企稳」参数（常识初值，供回测粗检验）。"""
+    near_ma20: float = 0.02      # 收盘贴近 MA20 上限：0 < close/ma20-1 <= 2%
+    min_above_days: int = 3      # 此前至少 N 天收盘在 MA20 上方（确认是回踩非破位）
+
+
+def gate_pullback_ma20(bars: pd.DataFrame,
+                       params: PullbackParams = PullbackParams()) -> GateResult:
+    """回踩 MA20 企稳入场：收盘站上 MA20、回踩贴近 MA20、当日收阳企稳、
+    此前连续在 MA20 上方（趋势中的回踩）。确定性纯函数。"""
+    if len(bars) < 21:
+        return GateResult(False, {"insufficient_history": False})
+    ind = add_indicators(bars)
+    last = ind.iloc[-1]
+    close = float(last["close"])
+    ma20 = float(last["ma20"])
+    if pd.isna(ma20) or ma20 <= 0:
+        return GateResult(False, {"no_ma20": False})
+    dev = close / ma20 - 1
+
+    # 此前 min_above_days 天是否都在 MA20 上方（倒数第 2 天起往前数）
+    above = 0
+    for i in range(2, len(ind)):
+        if float(ind["close"].iloc[-i]) > float(ind["ma20"].iloc[-i]):
+            above += 1
+        else:
+            break
+        if above >= params.min_above_days:
+            break
+
+    checks = {
+        "above_ma20": dev > 0,                                    # 站上 MA20
+        "near_ma20": 0 < dev <= params.near_ma20,                 # 回踩贴近 MA20
+        "bullish_bar": float(last["close"]) > float(last["open"]),  # 当日收阳企稳
+        "was_above": above >= params.min_above_days,              # 此前在 MA20 上方
+    }
+    return GateResult(passed=all(checks.values()), checks=checks)
+
+
+@dataclass(frozen=True)
+class OversoldParams:
+    """规则 L「左侧超卖」参数（常识固定初值，训练段仅粗检验不精调）。"""
+    rsi_period: int = 14      # RSI 周期
+    rsi_oversold: float = 30.0  # 超卖阈值：RSI < 该值触发左侧买入
+
+
+def gate_oversold_rsi(bars: pd.DataFrame,
+                      params: OversoldParams = OversoldParams()) -> GateResult:
+    """左侧超卖均值回归入场：RSI(14) < 30 触发，单笔买入。
+
+    与 gate_pullback_ma20 同款纯函数模式。确定性、不读文件/网络/时钟。
+    历史不足以算 RSI → 保守拒绝。
+    """
+    if len(bars) < params.rsi_period + 1:
+        return GateResult(False, {"insufficient_history": False})
+    ind = add_indicators(bars)
+    last = ind.iloc[-1]
+    rsi = float(last.get("rsi14")) if "rsi14" in last else float("nan")
+    checks = {"rsi_oversold": pd.notna(rsi) and rsi < params.rsi_oversold}
+    return GateResult(passed=all(checks.values()), checks=checks)
+
+
+# ── 基本面安全门（叠加在价格入场门之上，纯函数）─────────────────
+@dataclass(frozen=True)
+class FundamentalParams:
+    """基本面安全门槛（常识固定初值，对应买入检查单：ROE>10、PE<35）。
+    缺失基本面数据（NaN/None）一律放行——"有数据才卡"，避免早期覆盖薄导致回测空窗。"""
+    roe_min: float = 10.0     # ROE 下限(%)
+    pe_max: float = 35.0      # PE 上限
+    require: bool = True      # True=应用该门；False=完全放行（供消融/对照）
+
+
+def fundamental_safety(pe, roe, params: FundamentalParams = FundamentalParams()) -> GateResult:
+    """基本面安全门：ROE ≥ roe_min 且 0 < PE ≤ pe_max。
+
+    缺失(NaN/None) → 放行（PIT 覆盖薄时不误杀）；PE≤0(亏损/负估值) → 拒绝；
+    ROE<门槛 → 拒绝。纯确定性函数，供 _select_candidates 在价格门之上叠加。
+    """
+    def _nan(v):
+        return v is None or (isinstance(v, float) and pd.isna(v))
+
+    if not params.require:
+        return GateResult(True, {"fundamental_off": True})
+
+    pe_ok = True
+    if not _nan(pe):
+        pe_ok = 0 < float(pe) <= params.pe_max
+    roe_ok = True
+    if not _nan(roe):
+        roe_ok = float(roe) >= params.roe_min
+
+    checks = {"pe_ok": pe_ok, "roe_ok": roe_ok}
+    return GateResult(passed=all(checks.values()), checks=checks)
+
+
 # ── 反卖飞离场纪律（逐仓状态机）────────────────────────────
 @dataclass(frozen=True)
 class ExitParams:

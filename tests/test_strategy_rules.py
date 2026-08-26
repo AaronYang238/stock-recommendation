@@ -5,7 +5,8 @@ import numpy as np
 import pandas as pd
 
 from aselect.engine.strategy_rules import (
-    ExitParams, GateParams, PositionState, entry_gate, evaluate_exit,
+    ExitParams, GateParams, OversoldParams, PositionState, entry_gate,
+    evaluate_exit, gate_oversold_rsi,
 )
 
 
@@ -50,6 +51,37 @@ def test_gate_rejects_below_ma5_falling_knife():
     res = entry_gate(_bars(closes))
     assert res.passed is False
     assert res.checks["right_side"] is False
+
+
+# ── 左侧超卖闸门（规则 L）───────────────────────────────────
+def test_oversold_gate_triggers_on_crash():
+    # 持续下跌 → RSI 落到 <30 → 触发左侧买入
+    closes = list(np.linspace(10, 20, 40)) + list(np.linspace(20, 8, 20))
+    res = gate_oversold_rsi(_bars(closes))
+    assert res.passed is True
+    assert res.checks["rsi_oversold"] is True
+
+
+def test_oversold_gate_rejects_uptrend():
+    # 平稳上行 → RSI 高位 → 不触发
+    closes = list(np.linspace(10, 20, 60))
+    res = gate_oversold_rsi(_bars(closes))
+    assert res.passed is False
+
+
+def test_oversold_gate_rejects_short_history():
+    # 历史不足以算 RSI(14) → 保守拒绝
+    res = gate_oversold_rsi(_bars(list(np.linspace(10, 5, 5))))
+    assert res.passed is False
+
+
+def test_oversold_gate_custom_threshold():
+    # 高阈值(200)：默认(30)拒绝上行市，但阈值调高到必然高于任意 RSI 后放行 → 参数生效
+    closes = list(np.linspace(10, 20, 60))
+    assert gate_oversold_rsi(_bars(closes)).passed is False
+    res = gate_oversold_rsi(_bars(closes),
+                            params=OversoldParams(rsi_oversold=200.0))
+    assert res.passed is True
 
 
 # ── Task 3: 离场状态机 ───────────────────────────────────────

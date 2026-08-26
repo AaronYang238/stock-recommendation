@@ -7,8 +7,8 @@ app:
 
 # ── 数据源（适配器化，主源失效可回退备用源）──────────────────
 datasource:
-  primary: akshare        # akshare（免费无 Key）
-  fallback: tushare       # 需积分；Key 走环境变量 TUSHARE_TOKEN
+  primary: tushare        # akshare(免费无Key) | baostock(免费有财务,不被封) | tushare(需积分)
+  fallback: baostock      # 主源失效时回退；baostock 免费、含真实财务+披露日
   adjust: hfq             # 复权方式：none | qfq(前复权) | hfq(后复权)；回测默认后复权
   retry: 3
   retry_backoff_s: 2
@@ -30,6 +30,12 @@ backtest:
   t_plus_1: true          # 模拟 T+1
   limit_up_down: true     # 涨跌停无法成交
 
+# ── 自动调度（收盘后增量同步；python -m aselect.scheduler）────
+scheduler:
+  hour: 16                # 每个交易日 16:30 跑 sync（A 股节假日空跑无副作用）
+  minute: 30
+  limit: 0                # 0=全市场；调小可限制每次同步只数
+
 # ── AI 模块（热插拔 · 铁律二）──────────────────────────────
 ai:
   enabled: false          # 全局开关；false 时整套系统仍可运行
@@ -44,3 +50,10 @@ ai:
     event_extraction: true
     nl_to_filter: false
     report_generation: true
+
+# ── 通知（配置驱动·热插拔；未启用或缺 webhook 时回退 NullNotifier）──
+notify:
+  enabled: false          # 全局开关；false 时核心照跑，仅本地打印候选
+  channel: feishu         # 目前支持 feishu
+  webhook_url_env: FEISHU_WEBHOOK  # webhook URL 只从环境变量读，禁止写入配置/仓库
+  timeout_s: 5

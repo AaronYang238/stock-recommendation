@@ -198,6 +198,41 @@ def simulate_position_fixed_take(frame, entry_idx, cost,
                "eod_close", buy_cost, sell_cost)
 
 
+def simulate_position_fixed_stop_take(frame, entry_idx, cost,
+                                      exit_params: ExitParams = ExitParams(),
+                                      limit_pct: float = 0.095,
+                                      stop_pct: float = 0.08,
+                                      take_pct: float = 0.20) -> Trade | None:
+    """固定百分比「止损 + 止盈」：跌 stop_pct 止损、涨 take_pct 止盈，次日开盘执行；
+    最大持仓/末日兜底。用于验证「回踩买 + 8%止损 + 20%止盈」这套参数。"""
+    buy_cost, sell_cost = _costs(cost)
+    n = len(frame)
+    bi = _fillable_open(frame, entry_idx + 1, "buy", limit_pct)
+    if bi is None or bi >= n:
+        return None
+    entry_price = float(frame["open"].iloc[bi])
+    stop_line = entry_price * (1 - stop_pct)
+    take_line = entry_price * (1 + take_pct)
+    for k, i in enumerate(range(bi + 1, n), start=1):
+        close = float(frame["close"].iloc[i])
+        if close <= stop_line:
+            si = _fillable_open(frame, i + 1, "sell", limit_pct)
+            si = si if si is not None else n - 1
+            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
+                       "fixed_stop", buy_cost, sell_cost)
+        if close >= take_line:
+            si = _fillable_open(frame, i + 1, "sell", limit_pct)
+            si = si if si is not None else n - 1
+            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
+                       "fixed_take", buy_cost, sell_cost)
+        if k >= exit_params.max_hold:
+            si = _fillable_open(frame, i + 1, "sell", limit_pct) or i
+            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
+                       "max_hold", buy_cost, sell_cost)
+    return _mk(frame, bi, n - 1, entry_price, float(frame["close"].iloc[-1]),
+               "eod_close", buy_cost, sell_cost)
+
+
 def _swing_metrics(trades: list, cost: dict, baskets: dict | None = None) -> SwingReport:
     """由逐笔交易 + 每调仓日等权篮子收益，汇总组合指标（按笔盈亏比/期望，含胜率仅参考）。"""
     n = len(trades)

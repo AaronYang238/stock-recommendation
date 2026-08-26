@@ -56,6 +56,10 @@ DEFAULT_FACTORS: dict[str, list[FactorDef]] = {
         # AI 舆情正交因子：情绪越高越好；数值列由 data 层产出，engine 只读数值（无 LLM）；正交化
         FactorDef("sentiment", "sentiment", ascending=False, orthogonalize=True),
     ],
+    "moneyflow": [
+        # 资金流因子：主力净流入(net_inflow)越多越好；作增强因子，权重上限0.25
+        FactorDef("net_inflow", "net_inflow", ascending=False, weight=0.25),
+    ],
 }
 
 # 中性化默认所用列

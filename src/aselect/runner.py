@@ -62,9 +62,12 @@ def run_strategy_backtest(
 # ── 阶段二：单因子 IC 研究 + IC 加权 + 样本外验证 ──────────
 def run_factor_research(store: Storage, config: Config, factors: dict | None = None,
                         freq: str = "M", start: str | None = None,
-                        end: str | None = None) -> dict:
+                        end: str | None = None,
+                        progress: bool = False,
+                        cross_by_t: dict | None = None) -> dict:
     """对每个因子做 walk-forward 单因子 IC 研究（逐期 PIT 截面 → 因子处理值 → IC）。
-    返回 {因子名: FactorICReport}。"""
+    返回 {因子名: FactorICReport}。progress=True 时打印构建进度。
+    cross_by_t 可传入已构建的 {调仓日: 截面} 字典以复用（去重），None 则内部构建。"""
     from .engine.factors import DEFAULT_FACTORS, process_factor
     from .engine.factor_research import summarize
 
@@ -76,10 +79,17 @@ def run_factor_research(store: Storage, config: Config, factors: dict | None = N
         return {}
     schedule = _rebalance_dates(panel.index, freq)
 
-    # 逐调仓日构建一次 PIT 截面（各因子共用）
-    cross_by_t = {t: build_cross_section(store, config, symbols=universe,
-                                         as_of=pd.Timestamp(t).strftime("%Y-%m-%d"))
-                  for t in schedule}
+    # 逐调仓日构建一次 PIT 截面（各因子共用）；已传入则直接复用（去重）
+    if cross_by_t is None:
+        _progress(progress, f"[因子研究] 构建 {len(schedule)} 个调仓日的 PIT 截面（全市场）…")
+        cross_by_t = {}
+        _n = 0
+        for t in schedule:
+            _n += 1
+            if progress and (_n % max(1, len(schedule) // 10) == 0 or _n == len(schedule)):
+                _progress(progress, f"[因子研究] PIT 截面 {_n}/{len(schedule)} ({_n / len(schedule):.0%})")
+            cross_by_t[t] = build_cross_section(store, config, symbols=universe,
+                                                as_of=pd.Timestamp(t).strftime("%Y-%m-%d"))
 
     reports = {}
     for defs in factors.values():
@@ -112,18 +122,29 @@ def ic_category_weights(reports: dict, factors: dict | None = None) -> dict:
     total = sum(raw.values())
     if total <= 0:
         return {cat: 1.0 for cat in cat_ic}          # 无正 IC → 等权
-    return {cat: w / total for cat, w in raw.items()}
+    weights = {cat: w / total for cat, w in raw.items()}
+    # 资金流(net_inflow)作增强因子：权重上限 0.25（grill-me Q5），超额按比例分给其他类别
+    if "moneyflow" in weights and weights["moneyflow"] > 0.25:
+        excess = weights["moneyflow"] - 0.25
+        weights["moneyflow"] = 0.25
+        others = {c: w for c, w in weights.items() if c != "moneyflow"}
+        ot = sum(others.values()) or 1.0
+        for c in others:
+            weights[c] = others[c] + excess * (others[c] / ot)
+    return weights
 
 
 def run_validated_strategy(store: Storage, config: Config, freq: str = "M",
-                           top_n: int = 20, oos_split: float = 0.7) -> dict:
+                           top_n: int = 20, oos_split: float = 0.7,
+                           start: str | None = None, end: str | None = None) -> dict:
     """样本外纪律（铁律3）：训练段拟合 IC 权重，**只在样本外段测一次**。
 
     返回 {split_date, weights, train, oos}，oos 为对外头条指标（禁止在其上反复调参）。
+    start/end 可限定回测窗口（如近 5 年）以降内存峰值。
     """
     adjust = config.datasource.get("adjust", "hfq")
     universe = build_universe(store, include_delisted=True)
-    panel = _price_panel(store, universe, adjust, None, None)
+    panel = _price_panel(store, universe, adjust, start, end)
     schedule = _rebalance_dates(panel.index, freq)
     if len(schedule) < 4:
         return {"error": "样本太短，无法切分训练/样本外。"}
@@ -131,62 +152,304 @@ def run_validated_strategy(store: Storage, config: Config, freq: str = "M",
     split_date = pd.Timestamp(schedule[k]).strftime("%Y-%m-%d")
 
     # 仅用训练段研究 IC → 定权重
-    train_reports = run_factor_research(store, config, freq=freq, end=split_date)
+    train_reports = run_factor_research(store, config, freq=freq,
+                                        start=start, end=split_date)
     weights = ic_category_weights(train_reports)
 
     train = run_strategy_backtest(store, config, freq=freq, top_n=top_n,
-                                  weights=weights, end=split_date)
+                                  weights=weights, start=start, end=split_date)
     oos = run_strategy_backtest(store, config, freq=freq, top_n=top_n,
-                                weights=weights, start=split_date)
+                                weights=weights, start=split_date, end=end)
     return {"split_date": split_date, "weights": weights, "train": train, "oos": oos}
 
 
 # ── 阶段三：事件驱动周级摆动回测 + 消融对照 ────────────────
+def _regime_alloc(store: Storage, as_of: str, ma_n: int = 20,
+                  idx: str = "000001.SH") -> float:
+    """按上证指数 MA20+斜率判档，返回仓位系数（进攻1.0/平衡0.6/防守0.3）。
+
+    只使用 ≤as_of 的指数数据（防前视）；指数数据不足时回退中性 0.6。
+    """
+    try:
+        df = store.get_index(idx, end=as_of)
+        if df is None or len(df) < ma_n + 5:
+            return 0.6
+        df = df.sort_values("date")
+        closes = [float(x) for x in df["close"].tolist()]
+        last = closes[-1]
+        ma = sum(closes[-ma_n:]) / ma_n
+        ma_prev = sum(closes[-ma_n - 5:-5]) / ma_n
+        above = last > ma
+        up = ma > ma_prev
+        if above and up:
+            return 1.0          # 进攻
+        if (not above) and (not up):
+            return 0.3          # 防守
+        return 0.6              # 平衡
+    except Exception:
+        return 0.6
+
+
+def _progress(progress: bool, msg: str) -> None:
+    """进度打印（默认关闭，不影响确定性/输出）。"""
+    if progress:
+        print(msg, flush=True)
+
+
+def _build_cross_by_t(store, config, universe, frames, schedule, progress, label):
+    """逐调仓日构建 PIT 截面字典 {t: cross_df}（各子回测/因子研究共用，去重）。"""
+    cross_by_t = {}
+    _n, _tot = 0, len(schedule)
+    for t in schedule:
+        _n += 1
+        if progress and (_n % max(1, _tot // 10) == 0 or _n == _tot):
+            _progress(progress, f"[{label}] 截面 {_n}/{_tot} ({_n / _tot:.0%})")
+        cross_by_t[t] = build_cross_section(store, config, symbols=universe,
+                                            as_of=pd.Timestamp(t).strftime("%Y-%m-%d"),
+                                            frames=frames)
+    return cross_by_t
+
+
 def run_swing_backtest(
     store: Storage, config: Config,
     start: str | None = None, end: str | None = None,
     freq: str = "W", top_n: int = 10, max_per_industry: int = 2,
     weights: dict | None = None, gate: bool = True,
     exit_params=None, limit_pct: float = 0.095, position_fn=None,
+    regime: bool = False, entry_gate=None, symbols=None,
+    frames=None, panel=None, progress: bool = False, label: str = "",
+    cross_by_t: dict | None = None,
 ):
     """组合级事件驱动回测：每周刷新候选(打分→入场闸门→单行业≤2→top_n)，
     每笔用 position_fn 逐日离场。返回 SwingReport。
 
     gate=False 时不做入场闸门(供闸门消融)；position_fn 可注入基线离场(供离场消融)。
+    regime=True 时按上证指数 MA20 档位调整每期篮子仓位(进攻1.0/平衡0.6/防守0.3)。
+    entry_gate 可注入替代入场闸门(默认反追高)；symbols 可覆盖股票池(默认全宇宙含退市)。
+    frames/panel/cross_by_t 预构建后传入可省去重复加载(供 OOS 里 base/fund 共用)。
+    progress=True 时打印阶段与逐调仓日进度；label 为进度前缀。
     """
-    from .engine.strategy_rules import ExitParams, entry_gate
+    from .engine.strategy_rules import ExitParams, entry_gate as _default_gate
     from .engine.swing_backtest import simulate_position
     return _run_swing(store, config, start, end, freq, top_n, max_per_industry,
                       weights, gate, exit_params or ExitParams(), limit_pct,
-                      entry_gate, position_fn or simulate_position)
+                      entry_gate or _default_gate, position_fn or simulate_position,
+                      regime=regime, symbols=symbols, frames=frames, panel=panel,
+                      progress=progress, label=label, cross_by_t=cross_by_t)
+
+
+def run_fundamental_backtest(
+    store: Storage, config: Config,
+    start: str | None = None, end: str | None = None,
+    freq: str = "W", top_n: int = 10, max_per_industry: int = 2,
+    weights: dict | None = None, exit_params=None, limit_pct: float = 0.095,
+    position_fn=None, regime: bool = False, entry_gate=None,
+    roe_min: float = 10.0, pe_max: float = 35.0,
+    frames=None, panel=None, symbols=None,
+    progress: bool = False, label: str = "",
+    cross_by_t: dict | None = None,
+):
+    """右侧摆动回测 + 基本面安全门（ROE>roe_min 且 0<PE≤pe_max，缺失放行）。
+
+    与 run_swing_backtest 完全同款：同调仓、同篮子、同离场，仅额外叠加基本面门，
+    便于 A/B 对比基本面安全带来的增量（期望/回撤/交易数变化）。
+    frames/panel/cross_by_t 预构建后传入可省去重复加载(供 OOS 里 base/fund 共用)。
+    symbols 可覆盖股票池(默认全宇宙含退市)。
+    progress=True 时打印阶段与逐调仓日进度；label 为进度前缀。
+    """
+    from .engine.strategy_rules import ExitParams, FundamentalParams, entry_gate as _default_gate
+    from .engine.swing_backtest import simulate_position
+    fund_params = FundamentalParams(roe_min=roe_min, pe_max=pe_max, require=True)
+    return _run_swing(store, config, start, end, freq, top_n, max_per_industry,
+                      weights, True, exit_params or ExitParams(), limit_pct,
+                      entry_gate or _default_gate, position_fn or simulate_position,
+                      regime=regime, fund_params=fund_params,
+                      frames=frames, panel=panel, symbols=symbols,
+                      progress=progress, label=label, cross_by_t=cross_by_t)
+
+
+def _leftside_symbols(store, pool: str):
+    """左侧回测股票池。
+
+    pool='filtered' → 返回 None，沿用右侧因子打分/选股池，仅换入场闸门（对比干净）。
+    pool='broad'    → 全部非科创板、非 ST、非北交所/指数/B股的 A 股（含退市，防幸存者偏差）。
+    """
+    if pool == "filtered":
+        return None
+    df = store.get_symbols(include_delisted=True)
+    out: list[str] = []
+    for _, r in df.iterrows():
+        sym = str(r["symbol"])
+        ex = str(r.get("exchange") or "")
+        if ex == "SSE":
+            if not (sym.startswith("60") and not sym.startswith("688")
+                    and not sym.startswith("689")):
+                continue
+        elif ex in ("SZSE", "SZ"):
+            if not (sym.startswith("00") or sym.startswith("30")):
+                continue
+        else:
+            continue                                  # BSE(北交所)/其他 剔除
+        name = str(r.get("name") or "").upper()
+        status = str(r.get("status") or "")
+        if status == "ST" or "ST" in name:            # 剔除 ST/*ST
+            continue
+        out.append(sym)
+    return out
+
+
+def run_leftside_backtest(
+    store: Storage, config: Config,
+    start: str | None = None, end: str | None = None,
+    freq: str = "W", pool: str = "broad",
+    top_n: int | None = None, max_per_industry: int | None = None,
+    weights: dict | None = None, exit_params=None, limit_pct: float = 0.095,
+    regime: bool = False, rsi_period: int = 14, rsi_oversold: float = 30.0,
+):
+    """左侧超卖均值回归回测：RSI<rsi_oversold 触发单笔买入，离场纪律与右侧完全一致。
+
+    pool='broad'   → 全部非科创板非ST票 + 中性打分（闸门为唯一约束），测"左侧整体赚不赚钱"。
+    pool='filtered'→ 沿用右侧因子池（低波+ROE+PE 打分 top_n），测"同一批好票里左 vs 右"。
+    """
+    from functools import partial
+
+    from .engine.strategy_rules import ExitParams, OversoldParams, gate_oversold_rsi
+    from .engine.swing_backtest import simulate_position
+
+    if pool == "filtered":
+        top_n = top_n if top_n is not None else 10
+        max_per_industry = max_per_industry if max_per_industry is not None else 2
+    else:
+        # broad：每周「最超卖的前 top_n 只」篮子（中性打分，闸门为唯一约束）。
+        # 不宜取全市场每只超卖股(top_n→几千)：会产出几十万笔交易，4GB 机器 OOM。
+        top_n = top_n if top_n is not None else 30
+        max_per_industry = max_per_industry if max_per_industry is not None else 100
+
+    symbols = _leftside_symbols(store, pool)
+    gate_fn = partial(gate_oversold_rsi, params=OversoldParams(
+        rsi_period=rsi_period, rsi_oversold=rsi_oversold))
+    return _run_swing(store, config, start, end, freq, top_n, max_per_industry,
+                      weights, True, exit_params or ExitParams(), limit_pct,
+                      gate_fn, simulate_position, regime=regime, symbols=symbols)
 
 
 def run_validated_swing(store: Storage, config: Config, freq: str = "W",
                         top_n: int = 10, max_per_industry: int = 2,
-                        oos_split: float = 0.7) -> dict:
+                        oos_split: float = 0.7, regime: bool = False,
+                        start: str | None = None, end: str | None = None) -> dict:
     """摆动回测的样本外纪律（铁律3）：训练段拟合 IC 权重，**样本外段只测一次**。
 
     返回 {split_date, weights, train, oos}；oos 为对外头条指标（禁止在其上反复调参）。
+    start/end 可限定回测窗口（如近 5 年）以降内存峰值。
     """
     adjust = config.datasource.get("adjust", "hfq")
     universe = build_universe(store, include_delisted=True)
-    panel = _price_panel(store, universe, adjust, None, None)
+    panel = _price_panel(store, universe, adjust, start, end)
     schedule = _rebalance_dates(panel.index, freq)
     if len(schedule) < 4:
         return {"error": "样本太短，无法切分训练/样本外。"}
     k = max(1, int(len(schedule) * oos_split))
     split_date = pd.Timestamp(schedule[k]).strftime("%Y-%m-%d")
 
-    train_reports = run_factor_research(store, config, freq=freq, end=split_date)
+    train_reports = run_factor_research(store, config, freq=freq,
+                                        start=start, end=split_date)
     weights = ic_category_weights(train_reports)
 
     train = run_swing_backtest(store, config, freq=freq, top_n=top_n,
                                max_per_industry=max_per_industry,
-                               weights=weights, end=split_date)
+                               weights=weights, start=start, end=split_date,
+                               regime=regime)
     oos = run_swing_backtest(store, config, freq=freq, top_n=top_n,
                              max_per_industry=max_per_industry,
-                             weights=weights, start=split_date)
+                             weights=weights, start=split_date, end=end,
+                             regime=regime)
     return {"split_date": split_date, "weights": weights, "train": train, "oos": oos}
+
+
+def run_validated_fund_backtest(
+    store: Storage, config: Config, freq: str = "W",
+    top_n: int = 10, max_per_industry: int = 2,
+    oos_split: float = 0.7, regime: bool = False,
+    start: str | None = None, end: str | None = None,
+    roe_min: float = 10.0, pe_max: float = 35.0,
+    progress: bool = False,
+) -> dict:
+    """右侧摆动回测 + 基本面安全门的样本外纪律（铁律3）。
+
+    与 run_validated_swing 同款切分：训练段拟合 IC 权重，**样本外段只测一次**。
+    在每一段内同时跑 无基本面(base) 与 加基本面(fund) 两线，A/B 以样本外段为准，
+    避免全窗口回测里基本面门只是"在数据上过拟合出的加分"。
+
+    返回 {split_date, weights, train:{base,fund}, oos:{base,fund}}；
+    oos 为对外头条指标（禁止在其上反复调参）。
+    """
+    adjust = config.datasource.get("adjust", "hfq")
+    universe = build_universe(store, include_delisted=True)
+    panel = _price_panel(store, universe, adjust, start, end)
+    schedule = _rebalance_dates(panel.index, freq)
+    if len(schedule) < 4:
+        return {"error": "样本太短，无法切分训练/样本外。"}
+    k = max(1, int(len(schedule) * oos_split))
+    split_date = pd.Timestamp(schedule[k]).strftime("%Y-%m-%d")
+    del panel                                            # 仅用于切分，释放全窗口面板内存
+
+    _progress(progress, "== 阶段1/4: 因子研究（IC 拟合）==")
+    # 因子研究内部建 train 截面（frames=None），与回测截面(frames=...)语义不同，不可共享
+    train_reports = run_factor_research(store, config, freq=freq,
+                                        start=start, end=split_date,
+                                        progress=progress)
+    weights = ic_category_weights(train_reports)
+
+    kw = dict(freq=freq, top_n=top_n, max_per_industry=max_per_industry,
+              weights=weights, regime=regime)
+
+    def _run(seg_start, seg_end, fund: bool, frames, panel, cross, label):
+        _progress(progress, f"[{label}] 开始…")
+        if fund:
+            r = run_fundamental_backtest(store, config, start=seg_start,
+                                         end=seg_end, roe_min=roe_min,
+                                         pe_max=pe_max, frames=frames,
+                                         panel=panel, progress=progress,
+                                         label=label, cross_by_t=cross, **kw)
+        else:
+            r = run_swing_backtest(store, config, start=seg_start, end=seg_end,
+                                   frames=frames, panel=panel,
+                                   progress=progress, label=label,
+                                   cross_by_t=cross, **kw)
+        _progress(progress, f"[{label}] 完成：{r.n_trades} 笔")
+        return r
+
+    # 去重：每段帧+截面只建一次，base/fund 两线共用（串行、确定性不变）。
+    results = {}
+    _progress(progress, "== 阶段2/4: train 段建帧+截面 ==")
+    train_frames = _ohlc_frames(store, universe, adjust, start, split_date)
+    train_panel = _price_panel(store, universe, adjust, start, split_date)
+    train_schedule = _rebalance_dates(train_panel.index, freq)
+    train_cross = _build_cross_by_t(store, config, universe, train_frames,
+                                    train_schedule, progress, "train/截面")
+    _progress(progress, "== 阶段3/4: train 段回测（base/fund 共用）==")
+    results["train"] = {
+        "base": _run(start, split_date, False, train_frames, train_panel,
+                     train_cross, "train/base"),
+        "fund": _run(start, split_date, True, train_frames, train_panel,
+                     train_cross, "train/fund"),
+    }
+    del train_frames, train_panel, train_cross
+
+    _progress(progress, "== 阶段4/4: oos 段建帧+截面+回测 ==")
+    oos_frames = _ohlc_frames(store, universe, adjust, split_date, end)
+    oos_panel = _price_panel(store, universe, adjust, split_date, end)
+    oos_schedule = _rebalance_dates(oos_panel.index, freq)
+    oos_cross = _build_cross_by_t(store, config, universe, oos_frames,
+                                  oos_schedule, progress, "oos/截面")
+    results["oos"] = {
+        "base": _run(split_date, end, False, oos_frames, oos_panel,
+                     oos_cross, "oos/base"),
+        "fund": _run(split_date, end, True, oos_frames, oos_panel,
+                     oos_cross, "oos/fund"),
+    }
+    del oos_frames, oos_panel, oos_cross
+    return {"split_date": split_date, "weights": weights, **results}
 
 
 def run_gate_ablation(store: Storage, config: Config, **kw) -> dict:
@@ -223,28 +486,47 @@ def run_exit_ablation(store: Storage, config: Config,
 
 
 def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
-               weights, gate, exit_params, limit_pct, entry_gate, position_fn):
+               weights, gate, exit_params, limit_pct, entry_gate, position_fn,
+               regime: bool = False, symbols=None, fund_params=None,
+               frames=None, panel=None, progress: bool = False,
+               label: str = "", cross_by_t: dict | None = None):
     from .engine.swing_backtest import SwingReport, _swing_metrics
 
     adjust = config.datasource.get("adjust", "hfq")
-    universe = build_universe(store, include_delisted=True)     # 含退市/ST
-    frames = _ohlc_frames(store, universe, adjust, start, end)
-    panel = _price_panel(store, universe, adjust, start, end)
+    universe = symbols if symbols is not None else build_universe(store, include_delisted=True)
+    if frames is None:
+        frames = _ohlc_frames(store, universe, adjust, start, end)
+    if panel is None:
+        panel = _price_panel(store, universe, adjust, start, end)
     if panel.shape[0] < 2 or not frames:
         return _swing_metrics([], config.backtest)
     schedule = _rebalance_dates(panel.index, freq)
+    _progress(progress, f"[{label or '回测'}] 调仓日共 {len(schedule)} 个，逐日推进…")
 
     trades = []
     baskets: dict = {}                    # 每调仓日的一篮子净收益（等权）
+    _tot = len(schedule)
+    _n = 0
     for t in schedule:
+        _n += 1
+        if progress and (_n % max(1, _tot // 10) == 0 or _n == _tot):
+            _progress(progress,
+                      f"[{label or '回测'}] 调仓日 {_n}/{_tot} ({_n / _tot:.0%})")
         as_of = pd.Timestamp(t).strftime("%Y-%m-%d")
-        cross = build_cross_section(store, config, symbols=universe, as_of=as_of)
+        if cross_by_t is not None:
+            cross = cross_by_t.get(t)
+            if cross is None:
+                continue
+        else:
+            cross = build_cross_section(store, config, symbols=universe, as_of=as_of,
+                                        frames=frames)
         if cross.empty:
             continue
         scored = score_factors(cross, weights=weights)
         tradable = set(_tradable(panel, t, limit_pct))
         picks = _select_candidates(scored, tradable, frames, t, top_n,
-                                   max_per_industry, gate, entry_gate)
+                                   max_per_industry, gate, entry_gate,
+                                   fund_params=fund_params)
         basket = []
         for sym in picks:
             fr = frames[sym]
@@ -257,13 +539,16 @@ def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
                 trades.append(tr)
                 basket.append(tr.ret)
         if basket:
-            baskets[pd.Timestamp(t)] = float(pd.Series(basket).mean())
+            alloc = _regime_alloc(store, as_of) if regime else 1.0
+            baskets[pd.Timestamp(t)] = float(pd.Series(basket).mean()) * alloc
     return _swing_metrics(trades, config.backtest, baskets)
 
 
 def _select_candidates(scored, tradable, frames, t, top_n, max_per_industry,
-                       gate, entry_gate) -> list:
-    """按打分降序取候选：可成交 + 通过入场闸门 + 单行业≤上限，最多 top_n 只。"""
+                       gate, entry_gate, fund_params=None) -> list:
+    """按打分降序取候选：可成交 + 通过入场闸门 + 单行业≤上限，最多 top_n 只。
+    fund_params 非空时，在价格门之上再叠加基本面安全门（ROE/PE）。"""
+    from .engine.strategy_rules import fundamental_safety
     has_ind = "industry" in scored.columns
     per_ind: dict = {}
     picks: list = []
@@ -278,6 +563,10 @@ def _select_candidates(scored, tradable, frames, t, top_n, max_per_industry,
             continue
         if gate:
             if not entry_gate(fr.iloc[:loc + 1]).passed:
+                continue
+        if fund_params is not None:        # 基本面安全门（叠加）
+            if not fundamental_safety(row.get("pe"), row.get("roe"),
+                                      fund_params).passed:
                 continue
         ind = row["industry"] if has_ind and pd.notna(row.get("industry")) else None
         if ind is not None and per_ind.get(ind, 0) >= max_per_industry:

@@ -66,7 +66,8 @@ def build_universe(store: Storage, include_delisted: bool = True) -> list[str]:
 
 def build_cross_section(store: Storage, config: Config,
                         symbols: list[str] | None = None,
-                        as_of: str | None = None) -> pd.DataFrame:
+                        as_of: str | None = None,
+                        frames: dict | None = None) -> pd.DataFrame:
     """构建截面因子表：基本面 + 价格因子(动量/波动) + AI 特征，一行一只股票。
 
     供 engine.factors.score_factors 与 screener.screen 直接消费。
@@ -83,15 +84,26 @@ def build_cross_section(store: Storage, config: Config,
     else:
         # 每只取「已披露记录中报告期最新」的一条（PIT 下 fund 已按 ann_date 过滤）
         sort_keys = [c for c in ("date", "ann_date") if c in fund.columns]
-        base = (fund.sort_values(sort_keys)
-                    .groupby("symbol", as_index=False).tail(1)
-                    .reset_index(drop=True))
+        fund_latest = (fund.sort_values(sort_keys)
+                            .groupby("symbol", as_index=False).tail(1)
+                            .reset_index(drop=True))
+        # 必须保留**全部**符号：无已披露基本面的票也用行情参与截面（基本面列留 NaN）。
+        # 否则 PIT 下基本面稀疏时截面会塌缩成"仅有基本面的那几只"，全宇宙被误丢。
+        base = pd.DataFrame({"symbol": syms}).merge(
+            fund_latest, on="symbol", how="left")
 
     # 价格因子（PIT：as_of 给定时只用 ≤as_of 的行情，否则动量/均线会偷看未来）
     adjust = config.datasource.get("adjust", "hfq")
+    # 性能：回测循环里已把全量行情加载进 frames，直接复用（按 as_of 切片），
+    # 避免每周对全宇宙重读 2.4GB daily 表（截面塌缩 bug 修复后此路径会是瓶颈）。
+    as_of_ts = pd.Timestamp(as_of) if as_of else None
     price_rows = []
     for sym in base["symbol"]:
-        daily = store.get_daily(sym, adjust, end=as_of)
+        if frames is not None and sym in frames:
+            fr = frames[sym]
+            daily = fr[fr.index <= as_of_ts] if as_of_ts is not None else fr
+        else:
+            daily = store.get_daily(sym, adjust, end=as_of)
         row = {"symbol": sym}
         if not daily.empty:
             row.update(add_price_factors(daily))
@@ -101,9 +113,15 @@ def build_cross_section(store: Storage, config: Config,
                 row["ma60"] = float(daily["close"].rolling(60).mean().iloc[-1])
             # 热点因子所需：最近一日资金流/换手/涨跌幅（PIT：仅用 ≤as_of 的行情）
             if "net_inflow" in daily.columns:
-                row["net_inflow"] = float(daily["net_inflow"].iloc[-1])
+                try:
+                    row["net_inflow"] = float(daily["net_inflow"].iloc[-1])
+                except (TypeError, ValueError):
+                    pass  # 资金流未拉取时跳过该因子（不崩溃）
             if "turnover" in daily.columns:
-                row["turnover"] = float(daily["turnover"].iloc[-1])
+                try:
+                    row["turnover"] = float(daily["turnover"].iloc[-1])
+                except (TypeError, ValueError):
+                    pass  # 换手缺失时跳过
             if len(daily) >= 2:
                 row["pct_chg"] = float(daily["close"].iloc[-1] / daily["close"].iloc[-2] - 1)
         price_rows.append(row)

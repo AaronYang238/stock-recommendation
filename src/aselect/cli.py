@@ -178,7 +178,7 @@ def _strategy(args):
 
     if args.oos:
         v = run_validated_strategy(store, cfg, freq=args.freq, top_n=args.top,
-                                   oos_split=args.oos)
+                                   oos_split=args.oos, start=args.start, end=args.end)
         if "error" in v:
             print(v["error"]); store.close(); return
         w = ", ".join(f"{k}:{x:.2f}" for k, x in v["weights"].items())
@@ -214,7 +214,8 @@ def _swing(args):
 
     if args.oos:                       # 样本外纪律：训练段拟合权重，样本外只测一次
         v = run_validated_swing(store, cfg, freq=args.freq, top_n=args.top,
-                                max_per_industry=args.max_per_industry, oos_split=args.oos)
+                                max_per_industry=args.max_per_industry, oos_split=args.oos,
+                                regime=args.regime, start=args.start, end=args.end)
         if "error" in v:
             print(v["error"]); store.close(); return
         w = ", ".join(f"{k}:{x:.2f}" for k, x in v["weights"].items())
@@ -227,7 +228,8 @@ def _swing(args):
         store.close(); return
 
     rep = run_swing_backtest(store, cfg, freq=args.freq, top_n=args.top,
-                             max_per_industry=args.max_per_industry, gate=not args.no_gate)
+                             max_per_industry=args.max_per_industry, gate=not args.no_gate,
+                             regime=args.regime, start=args.start, end=args.end)
     print(f"\n[摆动回测] 调仓 {args.freq} · top{args.top} · 单行业≤{args.max_per_industry} · "
           f"入场闸门 {'关' if args.no_gate else '开'}")
     print(f"  交易笔数 {rep.n_trades} | 总收益 {rep.total_return:.2%} | "
@@ -238,19 +240,59 @@ def _swing(args):
     store.close()
 
 
+def _leftside(args):
+    """左侧超卖回测：Run B(放开池) + Run A(右侧同池) + 右侧原线对照，离场纪律与右侧一致。"""
+    from .runner import run_leftside_backtest, run_swing_backtest
+    cfg = load_config()
+    store = get_storage(cfg)
+    kw = dict(freq=args.freq, start=args.start, end=args.end, regime=args.regime,
+              rsi_period=args.rsi_period, rsi_oversold=args.rsi_oversold)
+    print(f"\n[左侧回测] RSI({args.rsi_period})<{args.rsi_oversold} 单笔买入 · "
+          f"离场纪律=右侧移动止损 · 调仓{args.freq} · "
+          f"窗口 {args.start or '全部'} ~ {args.end or '现在'}")
+    rows = {}
+    for pool, label in (("broad", "Run B 放开池(全部非科创非ST)"),
+                        ("filtered", "Run A 右侧同池(低波+ROE+PE)")):
+        if pool == "broad":
+            rep = run_leftside_backtest(store, cfg, pool=pool, top_n=args.top, **kw)
+        else:
+            rep = run_leftside_backtest(store, cfg, pool=pool, **kw)  # 保持 top_n=10 与右侧一致
+        rows[pool] = rep
+        print(f"  [{label}] 交易 {rep.n_trades} 笔 | 总收益 {rep.total_return:.2%}"
+              f" | 夏普 {rep.sharpe} | 最大回撤 {rep.max_drawdown:.2%}"
+              f" | 期望 {rep.expectancy:.4f}/笔 | 盈亏比 {rep.profit_loss_ratio}"
+              f" | 胜率(仅参考) {rep.win_rate:.0%}")
+    right = run_swing_backtest(store, cfg, freq=args.freq, top_n=10,
+                               max_per_industry=2, regime=args.regime,
+                               start=args.start, end=args.end)
+    rows["right"] = right
+    print(f"  [右侧原线(对照)] 交易 {right.n_trades} 笔 | 总收益 {right.total_return:.2%}"
+          f" | 夏普 {right.sharpe} | 最大回撤 {right.max_drawdown:.2%}"
+          f" | 期望 {right.expectancy:.4f}/笔 | 盈亏比 {right.profit_loss_ratio}"
+          f" | 胜率(仅参考) {right.win_rate:.0%}")
+    print(f"\n[对照结论]")
+    for tag, key in (("Run B 左 vs 右", "broad"), ("Run A 左 vs 右", "filtered")):
+        d = rows[key].expectancy - rows["right"].expectancy
+        print(f"  {tag} 期望差 {d:+.5f}/笔 ({'左侧更高' if d > 0 else '右侧更高'})")
+    print(f"\n{cfg.disclaimer}")
+    store.close()
+
+
 def _ablation(args):
     """消融对照：把「追高」与「过早止盈」两大风险量化成钱。"""
     from .runner import run_exit_ablation, run_gate_ablation
     cfg = load_config()
     store = get_storage(cfg)
     g = run_gate_ablation(store, cfg, freq=args.freq, top_n=args.top,
-                          max_per_industry=args.max_per_industry)
+                          max_per_industry=args.max_per_industry,
+                          start=args.start, end=args.end)
     print("\n[消融①·反追高入场闸门] 期望对比：")
     print(f"  有闸门 期望 {g['gate_on'].expectancy:.4f}/笔（{g['gate_on'].n_trades}笔）"
           f" | 无闸门 期望 {g['gate_off'].expectancy:.4f}/笔（{g['gate_off'].n_trades}笔）")
     print(f"  → 期望增量 {g['expectancy_delta']:+.4f}（>0 即闸门降低了追高成本）")
     e = run_exit_ablation(store, cfg, freq=args.freq, top_n=args.top,
-                          max_per_industry=args.max_per_industry, fixed_pct=args.fixed_pct)
+                          max_per_industry=args.max_per_industry, fixed_pct=args.fixed_pct,
+                          start=args.start, end=args.end)
     print("\n[消融②·反卖飞离场纪律] 按笔盈亏比对比：")
     print(f"  吊灯移动止损 {e['trailing'].profit_loss_ratio} | "
           f"涨停即清 {e['sell_on_limit'].profit_loss_ratio} | "
@@ -315,6 +357,70 @@ def _backtest(args):
     print(f"回测 {args.symbol}（engine={res.engine}）:")
     print(f"  总收益 {res.total_return:.2%} | 年化 {res.annual_return:.2%} | "
           f"夏普 {res.sharpe} | 最大回撤 {res.max_drawdown:.2%} | 交易 {res.trades} 次")
+    print(f"\\n{cfg.disclaimer}")
+    store.close()
+
+
+def _fundamental(args):
+    """右侧摆动回测 + 基本面安全门：A/B 对比（无基本面 vs 加 ROE/PE 门）。
+
+    --oos 给定时走样本外纪律：训练段拟合 IC 权重，样本外段只测一次，
+    A/B 结论以样本外段为准（避免全窗口回测的过拟合假象）。
+    """
+    from .runner import (run_fundamental_backtest, run_swing_backtest,
+                         run_validated_fund_backtest)
+    cfg = load_config()
+    store = get_storage(cfg)
+    kw = dict(freq=args.freq, top_n=args.top, max_per_industry=args.max_per_industry,
+              regime=args.regime, start=args.start, end=args.end)
+    gate_desc = f"ROE>{args.roe_min} 且 0<PE≤{args.pe_max}（缺失放行）"
+    if args.oos:
+        v = run_validated_fund_backtest(store, cfg, oos_split=args.oos,
+                                        roe_min=args.roe_min, pe_max=args.pe_max,
+                                        progress=getattr(args, "progress", False),
+                                        **kw)
+        if "error" in v:
+            print(v["error"])
+            store.close()
+            return
+        print(f"\n[基本面安全门 OOS 验证] 右侧主线 ± 基本面门 · {gate_desc}"
+              f" · 调仓{args.freq} · top{args.top} · "
+              f"切分点 {v['split_date']}（训练 {args.start or '起点'}~{v['split_date']}"
+              f" / 样本外 {v['split_date']}~{args.end or '现在'}）")
+        for seg, label in (("train", "训练段(拟合权重)"), ("oos", "样本外(只测一次)")):
+            base, fund = v[seg]["base"], v[seg]["fund"]
+            print(f"\n== {label} ==")
+            for tag, rep in (("右侧(无基本面)", base), ("右侧+基本面安全", fund)):
+                print(f"  [{tag}] 交易 {rep.n_trades} 笔 | 总收益 {rep.total_return:.2%}"
+                      f" | 夏普 {rep.sharpe} | 最大回撤 {rep.max_drawdown:.2%}"
+                      f" | 期望 {rep.expectancy:.4f}/笔 | 盈亏比 {rep.profit_loss_ratio}"
+                      f" | 胜率(仅参考) {rep.win_rate:.0%}")
+            d_exp = fund.expectancy - base.expectancy
+            d_dd = fund.max_drawdown - base.max_drawdown
+            print(f"  [增量] 期望/笔 {d_exp:+.5f} ({'提升' if d_exp>0 else '下降'})"
+                  f" | 最大回撤 {d_dd:+.2%} ({'收窄' if d_dd>0 else '扩大'})"
+                  f" | 交易 {fund.n_trades} vs {base.n_trades} ({fund.n_trades-base.n_trades:+d})")
+        print(f"\n{cfg.disclaimer}")
+        store.close()
+        return
+    print(f"\n[基本面安全门回测] 右侧主线 ± 基本面门 · {gate_desc}"
+          f" · 调仓{args.freq} · top{args.top} · "
+          f"窗口 {args.start or '全部'} ~ {args.end or '现在'}")
+    base = run_swing_backtest(store, cfg, **kw)
+    fund = run_fundamental_backtest(store, cfg, roe_min=args.roe_min,
+                                    pe_max=args.pe_max, **kw)
+    for tag, rep in (("右侧(无基本面)", base), ("右侧+基本面安全", fund)):
+        print(f"  [{tag}] 交易 {rep.n_trades} 笔 | 总收益 {rep.total_return:.2%}"
+              f" | 夏普 {rep.sharpe} | 最大回撤 {rep.max_drawdown:.2%}"
+              f" | 期望 {rep.expectancy:.4f}/笔 | 盈亏比 {rep.profit_loss_ratio}"
+              f" | 胜率(仅参考) {rep.win_rate:.0%}")
+    d_exp = fund.expectancy - base.expectancy
+    d_dd = fund.max_drawdown - base.max_drawdown
+    print("\n[对比结论]")
+    print(f"  期望/笔: 基本面 {d_exp:+.5f} ({'提升' if d_exp>0 else '下降'})")
+    # max_drawdown 为负值：数值升高=回撤收窄=更好
+    print(f"  最大回撤: {d_dd:+.2%} ({'收窄' if d_dd>0 else '扩大'})")
+    print(f"  交易笔数: {fund.n_trades} vs {base.n_trades} ({fund.n_trades-base.n_trades:+d})")
     print(f"\n{cfg.disclaimer}")
     store.close()
 
@@ -364,15 +470,50 @@ def main():
     sw.add_argument("--top", type=int, default=10)
     sw.add_argument("--freq", default="W", help="候选刷新频率：W/M 或整数交易日")
     sw.add_argument("--max-per-industry", type=int, default=2, dest="max_per_industry")
+    sw.add_argument("--start")
+    sw.add_argument("--end")
     sw.add_argument("--no-gate", action="store_true", help="关闭入场闸门")
+    sw.add_argument("--regime", action="store_true",
+                    help="按上证指数 MA20 档位控仓（进攻1.0/平衡0.6/防守0.3）")
     sw.add_argument("--oos", type=float, default=0.0,
                     help="样本外比例(如0.7)：训练段拟合IC权重，样本外段只测一次")
     sw.set_defaults(func=_swing)
+
+    ls = sub.add_parser("leftside", help="左侧超卖回测：Run B放开池 + Run A右侧同池 对照")
+    ls.add_argument("--top", type=int, default=30,
+                    help="Run B(放开池)每周最超卖前N只篮子；Run A 恒为10与右侧一致")
+    ls.add_argument("--freq", default="W", help="候选刷新频率：W/M")
+    ls.add_argument("--start")
+    ls.add_argument("--end")
+    ls.add_argument("--regime", action="store_true",
+                    help="按上证指数 MA20 档位控仓")
+    ls.add_argument("--rsi-period", type=int, default=14, dest="rsi_period")
+    ls.add_argument("--rsi-oversold", type=float, default=30.0, dest="rsi_oversold")
+    ls.set_defaults(func=_leftside)
+
+    sf = sub.add_parser("swing-fund",
+                        help="右侧摆动回测 + 基本面安全门(ROE/PE) A/B 对比")
+    sf.add_argument("--top", type=int, default=10)
+    sf.add_argument("--freq", default="W", help="候选刷新频率：W/M")
+    sf.add_argument("--max-per-industry", type=int, default=2, dest="max_per_industry")
+    sf.add_argument("--start")
+    sf.add_argument("--end")
+    sf.add_argument("--regime", action="store_true",
+                    help="按上证指数 MA20 档位控仓")
+    sf.add_argument("--roe-min", type=float, default=10.0, dest="roe_min")
+    sf.add_argument("--pe-max", type=float, default=35.0, dest="pe_max")
+    sf.add_argument("--oos", type=float, default=0.0,
+                    help="样本外比例(如0.7)：训练段拟合IC权重，样本外段只测一次")
+    sf.add_argument("--progress", action="store_true",
+                    help="打印阶段与逐调仓日进度（便于长回测观察进度）")
+    sf.set_defaults(func=_fundamental)
 
     ab = sub.add_parser("ablation", help="消融对照：追高/过早止盈两大风险量化成钱")
     ab.add_argument("--top", type=int, default=10)
     ab.add_argument("--freq", default="W")
     ab.add_argument("--max-per-industry", type=int, default=2, dest="max_per_industry")
+    ab.add_argument("--start")
+    ab.add_argument("--end")
     ab.add_argument("--fixed-pct", type=float, default=0.08, dest="fixed_pct",
                     help="固定止盈基线阈值（默认+8%）")
     ab.set_defaults(func=_ablation)
