@@ -360,6 +360,14 @@ class SQLiteStorage(Storage):
         return self.conn.execute(
             "SELECT 1 FROM name_history LIMIT 1").fetchone() is not None
 
+    def get_name_history(self, symbols=None) -> pd.DataFrame:
+        sql = "SELECT symbol, name, start_date FROM name_history"
+        params: list = []
+        if symbols:
+            sql += f" WHERE symbol IN ({','.join('?' * len(symbols))})"
+            params = list(symbols)
+        return pd.read_sql(sql, self.conn, params=params)
+
     def names_as_of(self, as_of: str, symbols=None) -> dict:
         """symbol → as_of 当日的证券简称（start_date ≤ as_of 的最近一次更名）。"""
         sql = ("SELECT symbol, name, start_date FROM name_history "

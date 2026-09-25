@@ -53,10 +53,16 @@ def _is_limit(prev_close: float, price: float, limit_pct: float) -> int:
 
 def _fillable_open(frame: pd.DataFrame, start_i: int, side: str,
                    limit_pct: float) -> int | None:
-    """从 start_i 起找首个可成交日：买入避开涨停锁死，卖出避开跌停锁死。"""
+    """从 start_i 起找首个可成交日：买入避开涨停锁死，卖出避开跌停锁死。
+
+    以开盘价相对昨收判定：开盘即在涨(跌)停价，则"开盘成交"不可能实现 → 顺延（保守；
+    盘中开板后的成交因无分时价格不做假设）。frame 带 limit_pct 列时按其逐日阈值。"""
+    has_col = "limit_pct" in frame.columns          # 分板块/ST 的逐日阈值优先
     for i in range(start_i, len(frame)):
         prev_close = float(frame["close"].iloc[i - 1]) if i > 0 else float(frame["open"].iloc[i])
-        lim = _is_limit(prev_close, float(frame["open"].iloc[i]), limit_pct)
+        lp = (float(frame["limit_pct"].iloc[i]) if has_col
+              else (limit_pct if limit_pct is not None else 0.095))
+        lim = _is_limit(prev_close, float(frame["open"].iloc[i]), lp)
         if side == "buy" and lim == 1:
             continue
         if side == "sell" and lim == -1:
@@ -177,7 +183,9 @@ def simulate_position_sell_on_limit(frame, entry_idx, cost,
     for k, i in enumerate(range(bi + 1, n), start=1):
         prev = float(frame["close"].iloc[i - 1])
         close = float(frame["close"].iloc[i])
-        if prev > 0 and close / prev - 1 >= limit_pct:            # 涨停
+        lp = (float(frame["limit_pct"].iloc[i]) if "limit_pct" in frame.columns
+              else (limit_pct if limit_pct is not None else 0.095))
+        if prev > 0 and close / prev - 1 >= lp:                   # 涨停（分板块阈值）
             si, px, forced = _sell_after(frame, i, limit_pct)
             return _mk(frame, bi, si, entry_price, px,
                        forced or "sell_on_limit", buy_cost, sell_cost)

@@ -78,6 +78,9 @@ class Storage(ABC):
     def names_as_of(self, as_of: str, symbols=None) -> dict:
         return {}
 
+    def get_name_history(self, symbols=None) -> pd.DataFrame:
+        return pd.DataFrame(columns=["symbol", "name", "start_date"])
+
     def data_status(self) -> dict:
         return {}
 

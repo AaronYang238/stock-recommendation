@@ -25,7 +25,7 @@ def run_strategy_backtest(
     start: str | None = None, end: str | None = None,
     freq: str = "M", top_n: int = 20,
     benchmark_prices: pd.Series | None = None,
-    limit_pct: float = 0.095,
+    limit_pct: float | None = None,
     weights: dict | None = None,
 ) -> FactorBacktestReport:
     adjust = config.datasource.get("adjust", "hfq")
@@ -223,7 +223,7 @@ def run_swing_backtest(
     start: str | None = None, end: str | None = None,
     freq: str = "W", top_n: int = 10, max_per_industry: int = 2,
     weights: dict | None = None, gate: bool = True,
-    exit_params=None, limit_pct: float = 0.095, position_fn=None,
+    exit_params=None, limit_pct: float | None = None, position_fn=None,
     regime: bool = False, entry_gate=None, symbols=None,
     frames=None, panel=None, progress: bool = False, label: str = "",
     cross_by_t: dict | None = None, random_seed: int | None = None,
@@ -252,7 +252,7 @@ def run_fundamental_backtest(
     store: Storage, config: Config,
     start: str | None = None, end: str | None = None,
     freq: str = "W", top_n: int = 10, max_per_industry: int = 2,
-    weights: dict | None = None, exit_params=None, limit_pct: float = 0.095,
+    weights: dict | None = None, exit_params=None, limit_pct: float | None = None,
     position_fn=None, regime: bool = False, entry_gate=None,
     roe_min: float = 10.0, pe_max: float = 35.0,
     frames=None, panel=None, symbols=None,
@@ -311,7 +311,7 @@ def run_leftside_backtest(
     start: str | None = None, end: str | None = None,
     freq: str = "W", pool: str = "broad",
     top_n: int | None = None, max_per_industry: int | None = None,
-    weights: dict | None = None, exit_params=None, limit_pct: float = 0.095,
+    weights: dict | None = None, exit_params=None, limit_pct: float | None = None,
     regime: bool = False, rsi_period: int = 14, rsi_oversold: float = 30.0,
 ):
     """左侧超卖均值回归回测：RSI<rsi_oversold 触发单笔买入，离场纪律与右侧完全一致。
@@ -612,7 +612,7 @@ def run_swing_portfolio(
     start: str | None = None, end: str | None = None,
     freq: str = "W", top_n: int = 10, max_per_industry: int = 2,
     weights: dict | None = None, gate: bool = True,
-    exit_params=None, limit_pct: float = 0.095,
+    exit_params=None, limit_pct: float | None = None,
     regime: bool = False, entry_gate=None, symbols=None,
     fund_params=None, frames=None, panel=None, progress: bool = False,
     label: str = "", cross_by_t: dict | None = None,
@@ -730,8 +730,30 @@ def _ohlc_frames(store: Storage, symbols, adjust, start, end, config=None) -> di
         ind = add_indicators(d)
         ind.index = pd.to_datetime(d["date"])
         frames[sym] = ind
+    _attach_limits(store, frames)
     _mark_delisted(store, frames, config)
     return frames
+
+
+def _attach_limits(store: Storage, frames: dict) -> None:
+    """为每张 frame 加逐日涨跌停判定阈值列 limit_pct（分板块、按当日是否 ST）。"""
+    import numpy as np
+
+    from .data.symbols import is_st_name
+    from .engine.limits import limit_series
+    if not frames:
+        return
+    nh = store.get_name_history(list(frames))
+    by_sym = {s: g.sort_values("start_date") for s, g in nh.groupby("symbol")} if len(nh) else {}
+    for sym, fr in frames.items():
+        st = None
+        g = by_sym.get(sym)
+        if g is not None:
+            starts = pd.to_datetime(g["start_date"]).values
+            flags = np.array([is_st_name(n) for n in g["name"]])
+            k = np.searchsorted(starts, fr.index.values, side="right") - 1
+            st = np.where(k >= 0, flags[np.clip(k, 0, None)], False)
+        fr["limit_pct"] = limit_series(sym, fr.index, st)
 
 
 def _delist_haircut(config) -> float:
@@ -787,8 +809,13 @@ def _rebalance_dates(index: pd.DatetimeIndex, freq: str) -> list:
     return list(last.values)
 
 
-def _tradable(panel: pd.DataFrame, t, limit_pct: float) -> set:
-    """t 日可成交：有价、非停牌(前一交易日也有价)、且当日未涨跌停锁死。"""
+def _tradable(panel: pd.DataFrame, t, limit_pct: float | None = None) -> set:
+    """t 日可成交：有价、非停牌(前一交易日也有价)、且当日未涨跌停锁死。
+
+    limit_pct=None → 按板块/日期取阈值（主板 10%、创业板注册制后 20%、北交所 30%）；
+    给定浮点数则全市场统一（兼容旧调用）。
+    """
+    from .engine.limits import limit_threshold
     if t not in panel.index:
         return set()
     pos = panel.index.get_loc(t)
@@ -801,7 +828,8 @@ def _tradable(panel: pd.DataFrame, t, limit_pct: float) -> set:
         p, q = today.get(sym), prev.get(sym)
         if pd.isna(p) or pd.isna(q) or q <= 0:
             continue                                  # 停牌/缺价
-        if abs(p / q - 1) >= limit_pct:               # 涨跌停锁死 → 无法成交
+        thr = limit_pct if limit_pct is not None else limit_threshold(sym, t)
+        if abs(p / q - 1) >= thr:                     # 涨跌停锁死 → 无法成交
             continue
         out.add(sym)
     return out

@@ -22,6 +22,7 @@ import pandas as pd
 
 from .portfolio import simulate_portfolio
 from .swing_backtest import SwingReport, _swing_metrics
+from .limits import limit_threshold
 from .strategy_rules import fundamental_safety
 
 
@@ -93,7 +94,7 @@ class Pools:
 
 def build_pools(frames, panel, cross_by_t, schedule, top_n, max_per_industry,
                 gate=True, entry_gate_fn=fast_entry_gate, fund_params=None,
-                limit_pct=0.095, c_gate=None):
+                limit_pct=None, c_gate=None):
     """对每个调仓日：tradable 全池（PIT）、过门池、因子 top10 picks。
     entry_gate_fn=(fr,loc)->bool 用于 B 臂门池；c_gate=(bars_slice)->GateResult
     用于 C 臂（默认真 entry_gate，可换回踩门等）。"""
@@ -118,7 +119,8 @@ def build_pools(frames, panel, cross_by_t, schedule, top_n, max_per_industry,
                     q = prev.get(sym)
                     if pd.isna(p) or pd.isna(q) or q <= 0:
                         continue
-                    if abs(p / q - 1) >= limit_pct:
+                    thr = limit_pct if limit_pct is not None else limit_threshold(sym, ts)
+                    if abs(p / q - 1) >= thr:
                         continue
                     tradable.add(sym)
         ind_map = {}
