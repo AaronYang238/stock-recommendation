@@ -82,3 +82,23 @@ def test_generate_idempotent_same_day(tmp_path):
     today = pd.Timestamp.today().strftime("%Y-%m-%d")
     df = store.get_recommendations(date=today)
     assert len(df) <= 5
+
+
+def test_track_uses_next_open_as_cost(tmp_path):
+    store = _seed(tmp_path)
+    d = store.get_daily("600519", "hfq").sort_values("date").reset_index(drop=True)
+    k = len(d) - 40
+    target = d["date"].iloc[k].strftime("%Y-%m-%d")
+    store.upsert_recommendations(pd.DataFrame([{"date": target, "symbol": "600519", "rank": 1}]))
+    track_recommendation_returns(store, _cfg())
+    row = store.get_recommendations(date=target).iloc[0]
+    expect = round(d["close"].iloc[k + 1 + 4] / d["open"].iloc[k + 1] - 1, 4)
+    assert abs(row["fwd_5d"] - expect) < 1e-9          # 次日开盘买入，第 5 个交易日收盘
+
+
+def test_recommendations_follow_backtest_universe(tmp_path):
+    store = _seed(tmp_path)
+    generate_recommendations(store, _cfg(), top_n=20)
+    df = store.get_recommendations()
+    assert not df["symbol"].str.startswith(("688", "689")).any()   # 科创板按权限剔除
+    assert "ST" not in set(df["status"].dropna())                  # 当日 ST 剔除

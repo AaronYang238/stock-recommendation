@@ -8,7 +8,8 @@ from __future__ import annotations
 import pandas as pd
 
 from .config import Config
-from .data import build_cross_section
+from .data import (build_cross_section, build_universe, exclude_st_rows,
+                   filter_tradable_universe)
 from .data.symbols import status_label
 from .engine import score_factors
 from .storage import Storage
@@ -19,9 +20,15 @@ _RECO_COLS = ["date", "symbol", "name", "rank", "score", "board", "status", "pe"
 def generate_recommendations(store: Storage, config: Config, top_n: int = 20,
                              as_of: str | None = None,
                              weights: dict | None = None) -> int:
-    """生成并落库当日（或 as_of 日）top-N 推荐。默认剔除退市标的。"""
+    """生成并落库当日（或 as_of 日）top-N 推荐。
+
+    与回测同口径：可交易板块池（科创/北交所按权限剔除）、当日 ST 剔除、剔除退市。
+    """
     date = as_of or pd.Timestamp.today().strftime("%Y-%m-%d")
-    cross = build_cross_section(store, config, as_of=as_of)
+    universe = filter_tradable_universe(store, config,
+                                        build_universe(store, include_delisted=False))
+    cross = exclude_st_rows(
+        build_cross_section(store, config, symbols=universe, as_of=as_of), config)
     if cross.empty:
         return 0
     scored = score_factors(cross, weights=weights)
@@ -59,7 +66,8 @@ def refresh_snapshot(store: Storage, config: Config, weights: dict | None = None
 
 
 def track_recommendation_returns(store: Storage, config: Config) -> int:
-    """为缺失前向收益的推荐回填 5/20 个交易日收益（后复权）。返回更新条数。"""
+    """为缺失前向收益的推荐回填 5/20 个交易日收益（后复权，次日开盘买入 → 第 5/20
+    个交易日收盘；旧实现以推荐日收盘为成本，实盘拿不到这个价）。返回更新条数。"""
     df = store.get_recommendations()
     if df.empty:
         return 0
@@ -72,14 +80,16 @@ def track_recommendation_returns(store: Storage, config: Config) -> int:
             continue
         d = daily.sort_values("date").reset_index(drop=True)
         dates = d["date"].dt.strftime("%Y-%m-%d").tolist()
+        opens = d["open"].tolist()
         closes = d["close"].tolist()
         for _, row in grp.iterrows():
-            pos = _pos_on_or_after(dates, row["date"])
+            # 与回测同口径：推荐日收盘后生成 → 次一交易日开盘买入，持有 N 个交易日看收盘
+            pos = _pos_after(dates, row["date"])
             if pos is None:
                 continue
-            p0 = closes[pos]
-            f5 = _fwd(closes, pos, 5, p0)
-            f20 = _fwd(closes, pos, 20, p0)
+            p0 = opens[pos]
+            f5 = _fwd(closes, pos, 4, p0)
+            f20 = _fwd(closes, pos, 19, p0)
             if f5 is None and f20 is None:
                 continue
             store.set_recommendation_returns(row["date"], sym, f5, f20)
@@ -100,9 +110,10 @@ def recommendation_performance(store: Storage) -> dict:
 
 
 # ── 工具 ──
-def _pos_on_or_after(dates: list[str], target: str):
+def _pos_after(dates: list[str], target: str):
+    """推荐日之后的首个交易日（成交日）。"""
     for i, d in enumerate(dates):
-        if d >= target:
+        if d > target:
             return i
     return None
 

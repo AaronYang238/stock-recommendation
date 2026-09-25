@@ -5,8 +5,8 @@
 确定性核心，无 LLM，走铁律2(PIT)/3(样本外只测一次)/4(IC-无IC故用期望/盈亏比)。
 """
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 import pandas as pd
 

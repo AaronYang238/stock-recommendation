@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import baostock as bs
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 from aselect.config import load_config
 from aselect.engine.backtest import run_ma_backtest
