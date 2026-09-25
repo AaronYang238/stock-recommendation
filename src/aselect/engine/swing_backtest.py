@@ -65,6 +65,27 @@ def _fillable_open(frame: pd.DataFrame, start_i: int, side: str,
     return None
 
 
+def _terminal_exit(frame: pd.DataFrame) -> tuple[int, float, str]:
+    """数据尽头平仓：末日收盘；若标的在段内退市（attrs['delist_haircut']），
+    计入退市折价（退市整理/转板后的损失），而不是"停在最后价"。"""
+    n = len(frame)
+    px = float(frame["close"].iloc[-1])
+    h = float(frame.attrs.get("delist_haircut", 0.0) or 0.0)
+    if h > 0:
+        return n - 1, px * (1 - h), "delisted"
+    return n - 1, px, "eod_close"
+
+
+def _sell_after(frame: pd.DataFrame, i: int, limit_pct: float) -> tuple[int, float, str | None]:
+    """信号日 i 收盘决定卖出 → 次一可成交日开盘成交；跌停锁死顺延；到数据尽头仍卖不出
+    → _terminal_exit。返回 (成交行号, 成交价, 强制原因或 None)。"""
+    si = _fillable_open(frame, i + 1, "sell", limit_pct)
+    if si is None:
+        ti, px, why = _terminal_exit(frame)
+        return ti, px, why
+    return si, float(frame["open"].iloc[si]), None
+
+
 def simulate_position(frame: pd.DataFrame, entry_idx: int, cost: dict,
                       exit_params: ExitParams = ExitParams(),
                       limit_pct: float = 0.095) -> Trade | None:
@@ -105,24 +126,21 @@ def simulate_position(frame: pd.DataFrame, entry_idx: int, cost: dict,
                 scaled_frac += dec.fraction
             continue
         if dec.action == "exit":
-            si = _fillable_open(frame, i + 1, "sell", limit_pct)
-            si = si if si is not None else n - 1
-            exit_price = float(frame["open"].iloc[si])
-            exit_date = frame.index[si]
+            si, exit_price, forced = _sell_after(frame, i, limit_pct)
             rem = 1.0 - scaled_frac
             gross = scaled_gross + rem * (exit_price / entry_price - 1)
             ret = gross - buy_cost - sell_cost
-            return Trade(_sym(frame), frame.index[bi], exit_date,
-                         entry_price, exit_price, round(ret, 6), dec.reason,
+            return Trade(_sym(frame), frame.index[bi], frame.index[si],
+                         entry_price, exit_price, round(ret, 6), forced or dec.reason,
                          scaled=scaled_frac > 0)
 
-    # 未触发离场 → 末日收盘强平
-    exit_price = float(frame["close"].iloc[-1])
+    # 未触发离场 → 数据尽头平仓（退市则计入退市折价）
+    ti, exit_price, why = _terminal_exit(frame)
     rem = 1.0 - scaled_frac
     gross = scaled_gross + rem * (exit_price / entry_price - 1)
     ret = gross - buy_cost - sell_cost
-    return Trade(_sym(frame), frame.index[bi], frame.index[-1],
-                 entry_price, exit_price, round(ret, 6), "eod_close",
+    return Trade(_sym(frame), frame.index[bi], frame.index[ti],
+                 entry_price, exit_price, round(ret, 6), why,
                  scaled=scaled_frac > 0)
 
 
@@ -160,16 +178,15 @@ def simulate_position_sell_on_limit(frame, entry_idx, cost,
         prev = float(frame["close"].iloc[i - 1])
         close = float(frame["close"].iloc[i])
         if prev > 0 and close / prev - 1 >= limit_pct:            # 涨停
-            si = _fillable_open(frame, i + 1, "sell", limit_pct)
-            si = si if si is not None else n - 1
-            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
-                       "sell_on_limit", buy_cost, sell_cost)
+            si, px, forced = _sell_after(frame, i, limit_pct)
+            return _mk(frame, bi, si, entry_price, px,
+                       forced or "sell_on_limit", buy_cost, sell_cost)
         if k >= exit_params.max_hold:
-            si = _fillable_open(frame, i + 1, "sell", limit_pct) or i
-            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
-                       "max_hold", buy_cost, sell_cost)
-    return _mk(frame, bi, n - 1, entry_price, float(frame["close"].iloc[-1]),
-               "eod_close", buy_cost, sell_cost)
+            si, px, forced = _sell_after(frame, i, limit_pct)
+            return _mk(frame, bi, si, entry_price, px,
+                       forced or "max_hold", buy_cost, sell_cost)
+    ti, px, why = _terminal_exit(frame)
+    return _mk(frame, bi, ti, entry_price, px, why, buy_cost, sell_cost)
 
 
 def simulate_position_fixed_take(frame, entry_idx, cost,
@@ -186,16 +203,15 @@ def simulate_position_fixed_take(frame, entry_idx, cost,
     target = entry_price * (1 + fixed_pct)
     for k, i in enumerate(range(bi + 1, n), start=1):
         if float(frame["close"].iloc[i]) >= target:
-            si = _fillable_open(frame, i + 1, "sell", limit_pct)
-            si = si if si is not None else n - 1
-            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
-                       "fixed_take", buy_cost, sell_cost)
+            si, px, forced = _sell_after(frame, i, limit_pct)
+            return _mk(frame, bi, si, entry_price, px,
+                       forced or "fixed_take", buy_cost, sell_cost)
         if k >= exit_params.max_hold:
-            si = _fillable_open(frame, i + 1, "sell", limit_pct) or i
-            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
-                       "max_hold", buy_cost, sell_cost)
-    return _mk(frame, bi, n - 1, entry_price, float(frame["close"].iloc[-1]),
-               "eod_close", buy_cost, sell_cost)
+            si, px, forced = _sell_after(frame, i, limit_pct)
+            return _mk(frame, bi, si, entry_price, px,
+                       forced or "max_hold", buy_cost, sell_cost)
+    ti, px, why = _terminal_exit(frame)
+    return _mk(frame, bi, ti, entry_price, px, why, buy_cost, sell_cost)
 
 
 def simulate_position_fixed_stop_take(frame, entry_idx, cost,
@@ -216,21 +232,19 @@ def simulate_position_fixed_stop_take(frame, entry_idx, cost,
     for k, i in enumerate(range(bi + 1, n), start=1):
         close = float(frame["close"].iloc[i])
         if close <= stop_line:
-            si = _fillable_open(frame, i + 1, "sell", limit_pct)
-            si = si if si is not None else n - 1
-            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
-                       "fixed_stop", buy_cost, sell_cost)
+            si, px, forced = _sell_after(frame, i, limit_pct)
+            return _mk(frame, bi, si, entry_price, px,
+                       forced or "fixed_stop", buy_cost, sell_cost)
         if close >= take_line:
-            si = _fillable_open(frame, i + 1, "sell", limit_pct)
-            si = si if si is not None else n - 1
-            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
-                       "fixed_take", buy_cost, sell_cost)
+            si, px, forced = _sell_after(frame, i, limit_pct)
+            return _mk(frame, bi, si, entry_price, px,
+                       forced or "fixed_take", buy_cost, sell_cost)
         if k >= exit_params.max_hold:
-            si = _fillable_open(frame, i + 1, "sell", limit_pct) or i
-            return _mk(frame, bi, si, entry_price, float(frame["open"].iloc[si]),
-                       "max_hold", buy_cost, sell_cost)
-    return _mk(frame, bi, n - 1, entry_price, float(frame["close"].iloc[-1]),
-               "eod_close", buy_cost, sell_cost)
+            si, px, forced = _sell_after(frame, i, limit_pct)
+            return _mk(frame, bi, si, entry_price, px,
+                       forced or "max_hold", buy_cost, sell_cost)
+    ti, px, why = _terminal_exit(frame)
+    return _mk(frame, bi, ti, entry_price, px, why, buy_cost, sell_cost)
 
 
 class SlotBook:

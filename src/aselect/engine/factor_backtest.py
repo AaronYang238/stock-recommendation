@@ -44,6 +44,8 @@ def simulate(
     scores: dict,                                # {调仓日: pd.Series(symbol->打分)}，用于算 IC
     benchmark: pd.Series,                        # index=日期, 值=基准价格
     cost: dict,                                  # commission/stamp_tax/transfer_fee/slippage
+    delisted: set | None = None,                 # 段内退市的 symbol 集合
+    delist_haircut: float = 0.0,                 # 退市折价（退市整理/转板后的损失）
 ) -> FactorBacktestReport:
     dates = list(schedule)
     if len(dates) < 2:
@@ -64,12 +66,16 @@ def simulate(
         w = selections.get(t0, {})
         n_pos.append(len(w))
 
-        # 组合毛收益：持仓权重 × 个股 t0→t1 收益（缺价视为现金 0）
+        # 组合毛收益：持仓权重 × 个股 t0→t1 持有收益
+        # （停牌按最后价盯市；段内退市按最后价 ×(1-折价) 清算，不再"缺价记 0"）
         gross = 0.0
+        liquidated = set()
         for sym, wt in w.items():
-            r = _ret(panel, sym, t0, t1)
+            r, gone = _hold_ret(panel, sym, t0, t1, delisted or set(), delist_haircut)
             if r is not None:
                 gross += wt * r
+            if gone:
+                liquidated.add(sym)
 
         # 换手成本：买卖双边佣金+过户+滑点，卖出额外印花税
         syms = set(w) | set(prev_w)
@@ -82,7 +88,8 @@ def simulate(
         eq_dates.append(pd.Timestamp(t1))
         period_rets.append(net)
         turnovers.append(turnover)
-        prev_w = w
+        # 已退市清算的仓位不再参与下期换手（没有"再卖一次"）
+        prev_w = {k: v for k, v in w.items() if k not in liquidated}
 
         # 基准
         br = _ret(benchmark, None, t0, t1)
@@ -113,6 +120,25 @@ def _ret(data, sym, t0, t1):
     if p0 is None or p1 is None or pd.isna(p0) or pd.isna(p1) or p0 <= 0:
         return None
     return float(p1 / p0 - 1)
+
+
+def _hold_ret(panel: pd.DataFrame, sym, t0, t1, delisted: set, haircut: float):
+    """持有 t0→t1 的收益与是否已退市清算。返回 (ret|None, liquidated)。"""
+    if sym not in panel.columns:
+        return None, False
+    col = panel[sym]
+    p0s = col.loc[:t0].dropna()
+    if p0s.empty or p0s.iloc[-1] <= 0:
+        return None, False
+    p0 = float(p0s.iloc[-1])
+    p1 = col.get(t1)
+    if p1 is not None and pd.notna(p1):
+        return float(p1 / p0 - 1), False
+    seg = col.loc[:t1].dropna()
+    last = float(seg.iloc[-1])
+    if sym in delisted and col.loc[t1:].dropna().empty:
+        return float(last * (1 - haircut) / p0 - 1), True
+    return float(last / p0 - 1), False      # 停牌：按最后价盯市
 
 
 def _rank_ic(score: pd.Series | None, panel: pd.DataFrame, t0, t1):

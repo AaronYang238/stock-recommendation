@@ -29,6 +29,7 @@ backtest:
   cash: 1000000
   t_plus_1: true          # 模拟 T+1
   limit_up_down: true     # 涨跌停无法成交
+  delist_haircut: 0.5     # 段内退市持仓按最后价×(1-该值)清算（退市整理/转板损失，保守估计）
 
 # ── 自动调度（收盘后增量同步；python -m aselect.scheduler）────
 scheduler:

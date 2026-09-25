@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from .strategy_rules import ExitParams, PositionState, evaluate_exit
-from .swing_backtest import _fillable_open
+from .swing_backtest import _fillable_open, _sell_after
 from .indicators import add_indicators
 
 
@@ -75,10 +75,8 @@ def build_symbol_trades(df: pd.DataFrame, weekly_dates: pd.DatetimeIndex,
                     scale_price = float(open_[si])
                     scale_frac = dec.fraction
             elif dec.action == "exit":
-                si = _fillable_open(fr, i + 1, "sell", limit_pct)
-                si = si if si is not None else len(fr) - 1
+                si, exit_price, _forced = _sell_after(fr, i, limit_pct)
                 exit_fill_date = dates[si]
-                exit_price = float(open_[si])
                 exit_frac = st.remaining
                 exit_reason = dec.reason
                 break

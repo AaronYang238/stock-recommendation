@@ -80,3 +80,22 @@ def test_higher_cost_lowers_return_end_to_end(tmp_path):
                      "transfer_fee": 0.00002, "slippage": 0.002}),
         freq="M", top_n=5)
     assert costly.total_return <= free.total_return
+
+
+def test_delisted_holding_books_haircut_loss():
+    idx = pd.to_datetime(["2024-01-31", "2024-02-29", "2024-03-29"])
+    panel = pd.DataFrame({"A": [100.0, 100.0, None], "B": [100.0, 100.0, 100.0]}, index=idx)
+    sel = {idx[0]: {"A": 1.0}, idx[1]: {"A": 1.0}}
+    bench = pd.Series([1.0, 1.0, 1.0], index=idx)
+    rep = simulate(panel, list(idx), sel, {}, bench, COST0,
+                   delisted={"A"}, delist_haircut=0.5)
+    assert abs(rep.total_return - (-0.5)) < 1e-9       # 旧口径：缺价记 0 → 0%
+
+
+def test_suspended_holding_marked_at_last_price():
+    idx = pd.to_datetime(["2024-01-31", "2024-02-29", "2024-03-29"])
+    panel = pd.DataFrame({"A": [100.0, 120.0, None]}, index=idx)
+    # 2 月末还有价(120)，3 月末停牌未退市 → 按最后价 120 盯市
+    sel = {idx[0]: {"A": 1.0}, idx[1]: {"A": 1.0}}
+    rep = simulate(panel, list(idx), sel, {}, pd.Series([1.0] * 3, index=idx), COST0)
+    assert abs(rep.total_return - 0.2) < 1e-9

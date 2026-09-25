@@ -60,7 +60,9 @@ def run_strategy_backtest(
     if benchmark_prices is None:
         benchmark_prices = _load_benchmark(store, config, panel)
     bench = benchmark_prices.reindex(panel.index).ffill()
-    return simulate(panel, list(schedule), selections, scores, bench, config.backtest)
+    return simulate(panel, list(schedule), selections, scores, bench, config.backtest,
+                    delisted=_delisted_in_panel(store, panel),
+                    delist_haircut=_delist_haircut(config))
 
 
 # ── 阶段二：单因子 IC 研究 + IC 加权 + 样本外验证 ──────────
@@ -430,7 +432,7 @@ def run_validated_fund_backtest(
     # 去重：每段帧+截面只建一次，base/fund 两线共用（串行、确定性不变）。
     results = {}
     _progress(progress, "== 阶段2/4: train 段建帧+截面 ==")
-    train_frames = _ohlc_frames(store, universe, adjust, start, split_date)
+    train_frames = _ohlc_frames(store, universe, adjust, start, split_date, config)
     train_panel = _price_panel(store, universe, adjust, start, split_date)
     train_schedule = _rebalance_dates(train_panel.index, freq)
     train_cross = _build_cross_by_t(store, config, universe, train_frames,
@@ -445,7 +447,7 @@ def run_validated_fund_backtest(
     del train_frames, train_panel, train_cross
 
     _progress(progress, "== 阶段4/4: oos 段建帧+截面+回测 ==")
-    oos_frames = _ohlc_frames(store, universe, adjust, split_date, end)
+    oos_frames = _ohlc_frames(store, universe, adjust, split_date, end, config)
     oos_panel = _price_panel(store, universe, adjust, split_date, end)
     oos_schedule = _rebalance_dates(oos_panel.index, freq)
     oos_cross = _build_cross_by_t(store, config, universe, oos_frames,
@@ -506,7 +508,7 @@ def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
                 else filter_tradable_universe(store, config,
                                               build_universe(store, include_delisted=True)))
     if frames is None:
-        frames = _ohlc_frames(store, universe, adjust, start, end)
+        frames = _ohlc_frames(store, universe, adjust, start, end, config)
     if panel is None:
         panel = _price_panel(store, universe, adjust, start, end)
     if panel.shape[0] < 2 or not frames:
@@ -629,7 +631,7 @@ def run_swing_portfolio(
                 else filter_tradable_universe(store, config,
                                               build_universe(store, include_delisted=True)))
     if frames is None:
-        frames = _ohlc_frames(store, universe, adjust, start, end)
+        frames = _ohlc_frames(store, universe, adjust, start, end, config)
     if panel is None:
         panel = _price_panel(store, universe, adjust, start, end)
     if panel.shape[0] < 2 or not frames:
@@ -711,10 +713,12 @@ def _price_panel(store: Storage, symbols, adjust, start, end) -> pd.DataFrame:
     return pd.DataFrame(series).sort_index()
 
 
-def _ohlc_frames(store: Storage, symbols, adjust, start, end) -> dict:
+def _ohlc_frames(store: Storage, symbols, adjust, start, end, config=None) -> dict:
     """每 symbol 一张按日期索引、含技术指标（ma/rsi/atr…）的 OHLC 表。
 
     供事件驱动周级回测的入场闸门与逐仓离场逐日读取。空表跳过。
+    已退市且行情在本段内提前终止的标的，在 frame.attrs["delist_haircut"] 标注退市折价
+    （config.backtest.delist_haircut），离场引擎据此把"停在最后价"改为计入退市损失。
     """
     from .engine.indicators import add_indicators
     frames: dict = {}
@@ -726,7 +730,49 @@ def _ohlc_frames(store: Storage, symbols, adjust, start, end) -> dict:
         ind = add_indicators(d)
         ind.index = pd.to_datetime(d["date"])
         frames[sym] = ind
+    _mark_delisted(store, frames, config)
     return frames
+
+
+def _delist_haircut(config) -> float:
+    if config is None:
+        return 0.0
+    return float((config.backtest or {}).get("delist_haircut", 0.5))
+
+
+def _delisted_symbols(store: Storage) -> dict:
+    """symbol → delist_date（status='D'）。"""
+    meta = store.get_symbols(include_delisted=True)
+    if meta.empty or "status" not in meta.columns:
+        return {}
+    d = meta[meta["status"] == "D"]
+    return dict(zip(d["symbol"], d["delist_date"]))
+
+
+def _delisted_in_panel(store: Storage, panel: pd.DataFrame) -> set:
+    """面板内行情提前终止的已退市标的。"""
+    if panel.empty:
+        return set()
+    last = panel.index[-1]
+    out = set()
+    for sym in _delisted_symbols(store):
+        if sym in panel.columns:
+            lv = panel[sym].last_valid_index()
+            if lv is not None and lv < last:
+                out.add(sym)
+    return out
+
+
+def _mark_delisted(store: Storage, frames: dict, config) -> None:
+    h = _delist_haircut(config)
+    if not frames or h <= 0:
+        return
+    seg_last = max(fr.index[-1] for fr in frames.values())
+    for sym, dd in _delisted_symbols(store).items():
+        fr = frames.get(sym)
+        if fr is None or fr.index[-1] >= seg_last:
+            continue                       # 本段内未终止交易 → 与退市无关
+        fr.attrs["delist_haircut"] = h
 
 
 def _rebalance_dates(index: pd.DatetimeIndex, freq: str) -> list:

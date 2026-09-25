@@ -29,6 +29,7 @@ backtest:
   cash: 1000000
   t_plus_1: true          # 模拟 T+1
   limit_up_down: true     # 涨跌停无法成交
+  delist_haircut: 0.5     # 段内退市持仓按最后价×(1-该值)清算（退市整理/转板损失，保守估计）
   # 可交易股票池过滤（用户无科创板/北交所权限，且回避 ST）：
   exclude_star_market: true   # 剔除科创板(688/689)
   exclude_bse: true           # 剔除北交所(4/8)
