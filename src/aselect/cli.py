@@ -173,7 +173,12 @@ def _factor_ic(args):
     from .runner import run_factor_research
     cfg = load_config()
     store = get_storage(cfg)
-    reps = run_factor_research(store, cfg, freq=args.freq, start=args.start, end=args.end)
+    factors = None
+    if args.candidates:
+        from .engine.factors import CANDIDATE_FACTORS
+        factors = {**DEFAULT_FACTORS, **CANDIDATE_FACTORS}
+    reps = run_factor_research(store, cfg, factors=factors, freq=args.freq,
+                               start=args.start, end=args.end)
     if not reps:
         print("数据不足，先 seed/sync 后再试。")
         store.close(); return
@@ -195,7 +200,8 @@ def _strategy(args):
 
     if args.oos:
         v = run_validated_strategy(store, cfg, freq=args.freq, top_n=args.top,
-                                   oos_split=args.oos, start=args.start, end=args.end)
+                                   oos_split=args.oos, start=args.start, end=args.end,
+                                   hold_buffer=args.buffer)
         if "error" in v:
             print(v["error"]); store.close(); return
         w = ", ".join(f"{k}:{x:.2f}" for k, x in v["weights"].items())
@@ -209,7 +215,7 @@ def _strategy(args):
         store.close(); return
 
     rep = run_strategy_backtest(store, cfg, start=args.start, end=args.end,
-                                freq=args.freq, top_n=args.top)
+                                freq=args.freq, top_n=args.top, hold_buffer=args.buffer)
     print(f"\n[策略回测] 调仓 {args.freq} · 持仓 top{args.top} · "
           f"股票池含退市/ST（防幸存者偏差）")
     print(f"  调仓次数 {rep.n_rebalances} | 平均持仓 {rep.avg_positions} 只 | "
@@ -498,6 +504,8 @@ def main():
     fic.add_argument("--freq", default="M")
     fic.add_argument("--start")
     fic.add_argument("--end")
+    fic.add_argument("--candidates", action="store_true",
+                     help="同时研究候选因子(反转/低换手/异常换手)，不影响默认打分")
     fic.set_defaults(func=_factor_ic)
 
     stg = sub.add_parser("strategy", help="股票池级·walk-forward·多因子回测")
@@ -507,6 +515,8 @@ def main():
     stg.add_argument("--end")
     stg.add_argument("--oos", type=float, default=0.0,
                      help="样本外比例(如0.7)：训练段拟合IC权重，样本外段只测一次")
+    stg.add_argument("--buffer", type=float, default=1.0,
+                     help="持仓缓冲带：已持仓仍排在前 top×buffer 则不卖（如 2.0 降换手）")
     stg.set_defaults(func=_strategy)
 
     sw = sub.add_parser("swing", help="事件驱动·周级摆动回测（入场闸门+移动止损）")

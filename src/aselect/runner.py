@@ -261,7 +261,8 @@ def _register_oos(store: Storage, kind: str, split_date: str, end: str | None) -
 
 def run_validated_strategy(store: Storage, config: Config, freq: str = "M",
                            top_n: int = 20, oos_split: float = 0.7,
-                           start: str | None = None, end: str | None = None) -> dict:
+                           start: str | None = None, end: str | None = None,
+                           hold_buffer: float = 1.0) -> dict:
     """样本外纪律（铁律3）：训练段拟合 IC 权重，**只在样本外段测一次**。
 
     返回 {split_date, weights, train, oos}，oos 为对外头条指标（禁止在其上反复调参）。
@@ -283,9 +284,11 @@ def run_validated_strategy(store: Storage, config: Config, freq: str = "M",
     weights = ic_category_weights(train_reports)
 
     train = run_strategy_backtest(store, config, freq=freq, top_n=top_n,
-                                  weights=weights, start=start, end=split_date)
+                                  weights=weights, start=start, end=split_date,
+                                  hold_buffer=hold_buffer)
     oos = run_strategy_backtest(store, config, freq=freq, top_n=top_n,
-                                weights=weights, start=split_date, end=end)
+                                weights=weights, start=split_date, end=end,
+                                hold_buffer=hold_buffer)
     return _with_oos_audit(store, "strategy", split_date, end,
                            {"split_date": split_date, "weights": weights,
                             "train": train, "oos": oos})

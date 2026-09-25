@@ -28,6 +28,16 @@
 6. **AI 热插拔**:AI 提供商/模型/Key/各功能开关全部 **配置驱动**,改配置不改业务代码。`enabled=false` 或缺 Key 时回退 `NullAnalyzer`,**确定性核心必须完整可跑**。
 7. **范围**:**仅 A 股(沪深京)**。市场相关逻辑仍以适配器封装,便于未来扩展。
 
+### 回测口径（2026-09 修复后，勿回退）
+
+- **估值/行业/ST 均按日期 PIT**：估值读 `valuation_daily`(≤as_of 最近值)，行业读 `industry_history`，
+  ST 读 `name_history`。禁止用"现在的名字/行业/估值"回看历史；缺历史时宁可缺失也不回退到当前值。
+- **成交**：信号日收盘出信号 → 次日开盘成交；涨跌停按板块/日期/ST 判定（`engine/limits.py`）；
+  卖不出（跌停/停牌）顺延持有；卖出在**成交日**才回笼现金。
+- **记账**：摆动回测用仓位槽账本（`SlotBook` + `ledger_equity`），禁止把重叠持有的逐笔收益当周收益连乘。
+- **退市**：段内退市持仓按最后价 ×(1−`delist_haircut`) 清算，不得"停在最后价"。
+- **样本外**：`--oos` 每次运行都会登记；同一窗口使用 >1 次即不再是干净样本外，以 DSR 折算。
+
 ---
 
 ## 因子开发规范
@@ -81,12 +91,15 @@ config/config.yaml  运行与 AI 配置        .env  密钥(禁止提交)
 python -m aselect.cli seed              # 离线合成数据填库(不联网、可复现)
 python -m aselect.cli update --limit N  # 收盘后增量拉取真实数据(重试+容错)
 python -m aselect.cli sync              # 全量同步(列表→日线→基本面+行业→基准指数)
+python -m aselect.cli backfill --start 2015-01-01  # 回填历史 PIT：逐日估值/全历史财报/行业历史/简称历史(判ST)
 python -m aselect.scheduler             # 调度守护：交易日收盘后自动 sync
 python -m aselect.cli screen            # 多因子打分 + 条件筛选
 python -m aselect.cli backtest <code>   # 单只回测(MA 交叉)
 python -m aselect.cli factor-ic         # 单因子 walk-forward IC 研究(纳入加权前先验)
+python -m aselect.cli factor-ic --candidates  # 连同候选因子(反转/低换手/异常换手)一起验 IC
 python -m aselect.cli strategy --top 20 --freq M           # 股票池级 walk-forward 回测
-python -m aselect.cli strategy --oos 0.7  # 样本外纪律:训练段拟合IC权重，样本外只测一次
+python -m aselect.cli strategy --oos 0.7  # 样本外纪律:训练段拟合IC权重，样本外只测一次(自动登记使用次数+DSR)
+python -m aselect.cli strategy --buffer 2 # 持仓缓冲带降换手(排名仍在前 2N 不卖)
 python -m aselect.cli swing --top 10    # 事件驱动周级摆动回测(入场闸门+移动止损)
 python -m aselect.cli swing --oos 0.7   # 摆动回测样本外一次性验收
 python -m aselect.cli ablation          # 消融对照:追高/过早止盈两大风险量化成钱

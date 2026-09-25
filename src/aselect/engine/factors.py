@@ -62,6 +62,21 @@ DEFAULT_FACTORS: dict[str, list[FactorDef]] = {
     ],
 }
 
+# 候选因子（A 股文献中较稳健的一类）：**不进默认合成**，须先用
+# `factor-ic --candidates` 单独验 IC（中性化后）再决定是否纳入（CLAUDE 因子规范）。
+CANDIDATE_FACTORS: dict[str, list[FactorDef]] = {
+    "reversal": [
+        # 短期反转：过去 20 日涨得越多，未来越弱（A 股散户过度反应）
+        FactorDef("rev_20", "rev_20", ascending=True),
+    ],
+    "turnover": [
+        # 低换手溢价：20 日平均换手越低越好
+        FactorDef("turn_20", "turn_20", ascending=True),
+        # 异常换手：近 20 日 / 近 250 日换手之比越高，越可能是情绪高点
+        FactorDef("abn_turn", "abn_turn", ascending=True),
+    ],
+}
+
 # 中性化默认所用列
 INDUSTRY_COL = "industry"
 SIZE_COL = "total_mv"          # 市值；中性化时取 log
@@ -219,10 +234,22 @@ def score_factors(
 
 
 def add_price_factors(daily: pd.DataFrame, lookback: int = 60) -> dict[str, float]:
-    """从单只日线计算动量/波动因子（供合成到截面因子表）。"""
+    """从单只日线（已截至 as_of）计算价格/换手类因子，供合成到截面因子表。"""
     close = daily["close"]
-    if len(close) <= lookback:
-        return {"mom_60": float("nan"), "vol_60": float("nan")}
-    mom = close.iloc[-1] / close.iloc[-lookback - 1] - 1
-    vol = close.pct_change().iloc[-lookback:].std()
-    return {"mom_60": round(float(mom), 4), "vol_60": round(float(vol), 4)}
+    out: dict[str, float] = {"mom_60": float("nan"), "vol_60": float("nan"),
+                             "rev_20": float("nan"), "turn_20": float("nan"),
+                             "abn_turn": float("nan")}
+    if len(close) > lookback:
+        out["mom_60"] = round(float(close.iloc[-1] / close.iloc[-lookback - 1] - 1), 4)
+        out["vol_60"] = round(float(close.pct_change().iloc[-lookback:].std()), 4)
+    if len(close) > 20:
+        out["rev_20"] = round(float(close.iloc[-1] / close.iloc[-21] - 1), 4)
+    if "turnover" in daily.columns:
+        t = pd.to_numeric(daily["turnover"], errors="coerce")
+        t20 = t.iloc[-20:].mean() if len(t) >= 20 else float("nan")
+        out["turn_20"] = round(float(t20), 4) if pd.notna(t20) else float("nan")
+        if len(t) >= 250 and pd.notna(t20):
+            t250 = t.iloc[-250:].mean()
+            if pd.notna(t250) and t250 > 0:
+                out["abn_turn"] = round(float(t20 / t250), 4)
+    return out

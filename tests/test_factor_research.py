@@ -82,3 +82,12 @@ def test_validated_strategy_oos(tmp_path):
     assert "split_date" in v and "oos" in v and "train" in v
     assert abs(sum(v["weights"].values()) - 1.0) < 1e-6 or v["weights"]
     assert v["oos"].n_rebalances >= 1
+
+
+def test_candidate_factors_computed_and_researchable(tmp_path):
+    from aselect.engine.factors import CANDIDATE_FACTORS, DEFAULT_FACTORS
+    store = _seed(tmp_path)
+    reps = run_factor_research(store, _cfg(), factors={**DEFAULT_FACTORS, **CANDIDATE_FACTORS},
+                               freq="M")
+    assert {"rev_20", "turn_20"} <= set(reps)
+    assert "reversal" not in DEFAULT_FACTORS          # 未验 IC 前不进默认合成
