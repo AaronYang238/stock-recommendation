@@ -204,6 +204,7 @@ def _strategy(args):
             print(f"  [{tag}] 总收益 {rep.total_return:.2%} | 年化 {rep.annual_return:.2%}"
                   f" | 夏普 {rep.sharpe} | 超额 {rep.excess_return:.2%}"
                   f" | IC {rep.ic_mean} | 盈亏比 {rep.profit_loss_ratio}")
+        _print_oos_audit(v)
         print(f"\n{cfg.disclaimer}")
         store.close(); return
 
@@ -221,6 +222,21 @@ def _strategy(args):
           f"期胜率 {rep.win_rate:.0%}")
     print(f"\n{cfg.disclaimer}")
     store.close()
+
+
+def _print_oos_audit(v: dict) -> None:
+    """样本外纪律审计：使用次数 + Deflated Sharpe（扣除多次试验的运气成分）。"""
+    n = v.get("oos_uses", 1)
+    dsr = v.get("dsr")
+    if isinstance(dsr, dict):
+        dsr_s = " | ".join(f"{k}:{'-' if x is None else f'{x:.0%}'}" for k, x in dsr.items())
+    else:
+        dsr_s = "-" if dsr is None else f"{dsr:.0%}"
+    print(f"  [纪律] 该样本外窗口已被使用 {n} 次（含本次）"
+          f" | Deflated Sharpe P(真实夏普>0)：{dsr_s}")
+    if n > 1:
+        print("  ⚠️ 样本外已被反复查看，结果不再是干净的样本外；需要新的 holdout"
+              "（更晚的数据或前向纸面跟踪）才能验收。")
 
 
 def _swing(args):
@@ -241,6 +257,7 @@ def _swing(args):
             print(f"  [{tag}] 交易 {rep.n_trades} 笔 | 总收益 {rep.total_return:.2%}"
                   f" | 夏普 {rep.sharpe} | 最大回撤 {rep.max_drawdown:.2%}"
                   f" | 期望 {rep.expectancy:.4f}/笔 | 盈亏比 {rep.profit_loss_ratio}")
+        _print_oos_audit(v)
         print(f"\n{cfg.disclaimer}")
         store.close(); return
 
@@ -417,6 +434,7 @@ def _fundamental(args):
             print(f"  [增量] 期望/笔 {d_exp:+.5f} ({'提升' if d_exp>0 else '下降'})"
                   f" | 最大回撤 {d_dd:+.2%} ({'收窄' if d_dd>0 else '扩大'})"
                   f" | 交易 {fund.n_trades} vs {base.n_trades} ({fund.n_trades-base.n_trades:+d})")
+        _print_oos_audit(v)
         print(f"\n{cfg.disclaimer}")
         store.close()
         return

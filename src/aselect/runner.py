@@ -159,36 +159,104 @@ def run_factor_research(store: Storage, config: Config, factors: dict | None = N
                        and "industry" in cross.columns else None)
                 size = cross["total_mv"] if "total_mv" in cross.columns else None
                 proc = process_factor(cross[d.field], d.ascending, ind, size)
-                sbd[t] = pd.Series(proc.values, index=cross["symbol"].values)
+                # 打分时缺失记 0（行业中性后的"中性"值），但算 IC 时必须剔除：
+                # 大量并列的 0 会稀释秩相关，让稀疏因子看起来比实际更弱/更随机
+                proc = proc.where(cross[d.field].notna())
+                sbd[t] = pd.Series(proc.values, index=cross["symbol"].values).dropna()
             if sbd:
                 reports[d.name] = summarize(d.name, sbd, panel, schedule)
     return reports
 
 
-def ic_category_weights(reports: dict, factors: dict | None = None) -> dict:
-    """由单因子 IC 报告聚合出类别权重（按类别平均 IC 的正部归一；全非正则等权）。"""
+def ic_category_weights(reports: dict, factors: dict | None = None,
+                        shrink: float = 0.5, max_weight: float = 0.4) -> dict:
+    """由单因子 IC 报告聚合出类别权重。
+
+    旧实现按"类别平均 IC 的正部"直接归一，训练段样本少时会得出 lowvol:1.00 这种
+    押单一因子的极端权重。现改为：
+    1. 用 ICIR（IC 均值/标准差，稳定性）而非 IC 均值打分，取正部；
+    2. 向"正分类别等权"收缩（shrink=0.5 → 一半信号、一半等权）；
+    3. 单类别权重上限 max_weight（类别过少时自动放宽），资金流另有 0.25 上限。
+    全部非正 → 全类别等权。
+    """
     from .engine.factors import DEFAULT_FACTORS
     factors = factors or DEFAULT_FACTORS
     name2cat = {d.name: cat for cat, defs in factors.items() for d in defs}
-    cat_ic: dict = {}
+    cat_ir: dict = {}
     for name, r in reports.items():
         cat = name2cat.get(name)
         if cat:
-            cat_ic.setdefault(cat, []).append(r.ic_mean)
-    raw = {cat: max(sum(v) / len(v), 0.0) for cat, v in cat_ic.items()}
+            cat_ir.setdefault(cat, []).append(r.icir)
+    raw = {cat: max(sum(v) / len(v), 0.0) for cat, v in cat_ir.items()}
     total = sum(raw.values())
     if total <= 0:
-        return {cat: 1.0 for cat in cat_ic}          # 无正 IC → 等权
-    weights = {cat: w / total for cat, w in raw.items()}
-    # 资金流(net_inflow)作增强因子：权重上限 0.25（grill-me Q5），超额按比例分给其他类别
-    if "moneyflow" in weights and weights["moneyflow"] > 0.25:
-        excess = weights["moneyflow"] - 0.25
-        weights["moneyflow"] = 0.25
-        others = {c: w for c, w in weights.items() if c != "moneyflow"}
-        ot = sum(others.values()) or 1.0
-        for c in others:
-            weights[c] = others[c] + excess * (others[c] / ot)
-    return weights
+        return {cat: 1.0 / len(cat_ir) for cat in cat_ir} if cat_ir else {}
+    pos = [c for c, v in raw.items() if v > 0]
+    weights = {c: (shrink * raw[c] / total + (1 - shrink) / len(pos)) if c in pos else 0.0
+               for c in raw}
+    caps = {c: max(max_weight, 1.0 / len(pos)) for c in weights}
+    if "moneyflow" in caps:            # 资金流作增强因子：权重上限 0.25（grill-me Q5）
+        caps["moneyflow"] = min(caps["moneyflow"], 0.25)
+    return _cap_weights(weights, caps)
+
+
+def _cap_weights(weights: dict, caps: dict) -> dict:
+    """迭代截顶并把超额按比例分给未触顶的正权重类别，保持总和为 1。"""
+    w = dict(weights)
+    for _ in range(len(w) + 1):
+        over = {c: v - caps[c] for c, v in w.items() if v > caps[c] + 1e-12}
+        if not over:
+            break
+        excess = sum(over.values())
+        for c in over:
+            w[c] = caps[c]
+        free = {c: v for c, v in w.items() if v > 0 and c not in over and v < caps[c]}
+        ft = sum(free.values())
+        if ft <= 0:
+            break
+        for c, v in free.items():
+            w[c] = v + excess * v / ft
+    return w
+
+
+def _oos_returns(rep) -> pd.Series:
+    if hasattr(rep, "period_returns") and len(rep.period_returns):
+        return rep.period_returns                       # 调仓期收益
+    eq = getattr(rep, "equity_curve", None)
+    if eq is None or len(eq) < 2:
+        return pd.Series(dtype=float)
+    return eq.pct_change().dropna()                     # 逐日净值收益
+
+
+def _with_oos_audit(store: Storage, kind: str, split_date: str, end, out: dict) -> dict:
+    """登记样本外使用次数，并给出按试验次数折算的 Deflated Sharpe。"""
+    from .engine.stats import deflated_sharpe
+    n = _register_oos(store, kind, split_date, end)
+    out["oos_uses"] = n
+    oos = out["oos"]
+    if isinstance(oos, dict):          # 多臂（如 base/fund）：看过几臂就算几次试验
+        out["dsr"] = {k: deflated_sharpe(_oos_returns(r), n * len(oos)) for k, r in oos.items()}
+    else:
+        out["dsr"] = deflated_sharpe(_oos_returns(oos), n)
+    return out
+
+
+def _register_oos(store: Storage, kind: str, split_date: str, end: str | None) -> int:
+    """样本外使用登记：同一类回测、样本外窗口重叠的每次运行都算一次"试验"。
+    返回含本次在内的使用次数（>1 即该样本外已被看过，不再干净）。"""
+    import json
+    try:
+        raw = store.get_state("oos_ledger")
+    except (AttributeError, NotImplementedError):
+        return 1
+    ledger = json.loads(raw) if raw else []
+    lo, hi = split_date, end or "9999-12-31"
+    n = 1 + sum(1 for e in ledger if e["kind"] == kind
+                and e["split"] <= hi and (e["end"] or "9999-12-31") >= lo)
+    ledger.append({"kind": kind, "split": split_date, "end": end,
+                   "at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")})
+    store.set_state("oos_ledger", json.dumps(ledger, ensure_ascii=False))
+    return n
 
 
 def run_validated_strategy(store: Storage, config: Config, freq: str = "M",
@@ -218,7 +286,9 @@ def run_validated_strategy(store: Storage, config: Config, freq: str = "M",
                                   weights=weights, start=start, end=split_date)
     oos = run_strategy_backtest(store, config, freq=freq, top_n=top_n,
                                 weights=weights, start=split_date, end=end)
-    return {"split_date": split_date, "weights": weights, "train": train, "oos": oos}
+    return _with_oos_audit(store, "strategy", split_date, end,
+                           {"split_date": split_date, "weights": weights,
+                            "train": train, "oos": oos})
 
 
 # ── 阶段三：事件驱动周级摆动回测 + 消融对照 ────────────────
@@ -422,7 +492,9 @@ def run_validated_swing(store: Storage, config: Config, freq: str = "W",
                              max_per_industry=max_per_industry,
                              weights=weights, start=split_date, end=end,
                              regime=regime)
-    return {"split_date": split_date, "weights": weights, "train": train, "oos": oos}
+    return _with_oos_audit(store, "swing", split_date, end,
+                           {"split_date": split_date, "weights": weights,
+                            "train": train, "oos": oos})
 
 
 def run_validated_fund_backtest(
@@ -511,7 +583,8 @@ def run_validated_fund_backtest(
                      oos_cross, "oos/fund"),
     }
     del oos_frames, oos_panel, oos_cross
-    return {"split_date": split_date, "weights": weights, **results}
+    return _with_oos_audit(store, "swing-fund", split_date, end,
+                           {"split_date": split_date, "weights": weights, **results})
 
 
 def run_gate_ablation(store: Storage, config: Config, **kw) -> dict:
