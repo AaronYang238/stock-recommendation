@@ -233,8 +233,87 @@ def simulate_position_fixed_stop_take(frame, entry_idx, cost,
                "eod_close", buy_cost, sell_cost)
 
 
-def _swing_metrics(trades: list, cost: dict, baskets: dict | None = None) -> SwingReport:
-    """由逐笔交易 + 每调仓日等权篮子收益，汇总组合指标（按笔盈亏比/期望，含胜率仅参考）。"""
+class SlotBook:
+    """仓位槽账本（选股阶段用）：最多 top_n 个并发仓位，已持有的标的不重复开仓。
+
+    旧口径把每个调仓日的一篮子逐笔收益当作"周收益"连乘，而单笔持有最长 20 个
+    交易日 → 各周篮子在时间上重叠，等价于约 4 倍杠杆、同一只股票被每周重复买入。
+    本账本只在有空槽时接新仓，并记录每笔成交供 ledger_equity 逐日盯市。
+    """
+
+    def __init__(self, top_n: int):
+        self.top_n = int(top_n)
+        self.accepted: list = []          # [(signal_date, Trade, alloc)]
+
+    def _live(self, t) -> list:
+        t = pd.Timestamp(t)
+        # exit_date == t：已于 t 日开盘卖出，t 收盘时槽位已空出
+        return [tr for _, tr, _ in self.accepted if pd.Timestamp(tr.exit_date) > t]
+
+    def held(self, t) -> set:
+        return {tr.symbol for tr in self._live(t)}
+
+    def free(self, t) -> int:
+        return max(self.top_n - len(self._live(t)), 0)
+
+    def add(self, t, trade: Trade, alloc: float = 1.0) -> None:
+        self.accepted.append((pd.Timestamp(t), trade, float(alloc)))
+
+    @property
+    def trades(self) -> list:
+        return [tr for _, tr, _ in self.accepted]
+
+
+def ledger_equity(accepted: list, frames: dict, calendar, top_n: int,
+                  cash0: float = 1.0) -> pd.Series:
+    """由已接受的逐笔交易构建逐日净值（现金 + 挂单 + 逐日盯市持仓）。
+
+    约定：信号日 t 收盘按 NAV_t × alloc / top_n 从现金划出一个槽；入场日起按
+    收盘/入场价盯市（停牌沿用最后收盘）；离场日按该笔扣费后净收益 (1+ret) 回笼现金。
+    现金不足时按剩余现金缩小槽位。确定性纯函数。
+    """
+    cal = pd.DatetimeIndex(sorted(set(pd.DatetimeIndex(calendar))))
+    by_signal: dict = {}
+    for t, tr, alloc in accepted:
+        by_signal.setdefault(pd.Timestamp(t), []).append((tr, alloc))
+    cash = float(cash0)
+    live: list = []                       # [slot, trade, last_px]
+    nav = {}
+    for d in cal:
+        # 1) 离场回笼
+        keep = []
+        for slot, tr, last_px in live:
+            if pd.Timestamp(tr.exit_date) <= d:
+                cash += slot * (1.0 + tr.ret)
+            else:
+                keep.append([slot, tr, last_px])
+        live = keep
+        # 2) 盯市
+        val = 0.0
+        for pos in live:
+            slot, tr, last_px = pos
+            if pd.Timestamp(tr.entry_date) > d:
+                val += slot                               # 挂单：资金已冻结
+                continue
+            fr = frames.get(tr.symbol)
+            if fr is not None and d in fr.index:
+                pos[2] = last_px = float(fr.at[d, "close"])
+            val += slot * (last_px / tr.entry_price)
+        nav[d] = cash + val
+        # 3) 调仓日开新槽
+        for tr, alloc in by_signal.get(d, []):
+            want = nav[d] * alloc / top_n
+            slot = min(want, cash)
+            if slot <= 1e-12:
+                continue
+            cash -= slot
+            live.append([slot, tr, tr.entry_price])
+    return pd.Series(nav, dtype=float)
+
+
+def _swing_metrics(trades: list, cost: dict,
+                   equity: pd.Series | None = None) -> SwingReport:
+    """逐笔统计（期望/按笔盈亏比/胜率仅参考）+ 由逐日净值算总收益/夏普/回撤。"""
     n = len(trades)
     if n == 0:
         return SwingReport(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0,
@@ -245,12 +324,11 @@ def _swing_metrics(trades: list, cost: dict, baskets: dict | None = None) -> Swi
     pl_ratio = float(wins.mean() / abs(losses.mean())) if len(losses) and losses.mean() != 0 else 0.0
     win_rate = float(len(wins) / n)
 
-    baskets = baskets or {}
-    if baskets:
-        s = pd.Series(baskets).sort_index()
-        eq = (1 + s).cumprod()
-        total = float(eq.iloc[-1] - 1)
-        sharpe = float(np.sqrt(52) * s.mean() / s.std()) if s.std() > 0 else 0.0
+    if equity is not None and len(equity) >= 2 and equity.iloc[0] > 0:
+        eq = equity.sort_index()
+        dr = eq.pct_change().dropna()
+        total = float(eq.iloc[-1] / eq.iloc[0] - 1)
+        sharpe = float(np.sqrt(252) * dr.mean() / dr.std()) if dr.std() > 0 else 0.0
         peak = eq.cummax()
         mdd = float(((eq - peak) / peak).min())
     else:

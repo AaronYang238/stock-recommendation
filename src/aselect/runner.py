@@ -494,7 +494,7 @@ def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
                frames=None, panel=None, progress: bool = False,
                label: str = "", cross_by_t: dict | None = None,
                random_seed: int | None = None):
-    from .engine.swing_backtest import SwingReport, _swing_metrics
+    from .engine.swing_backtest import SlotBook, _swing_metrics, ledger_equity
 
     adjust = config.datasource.get("adjust", "hfq")
     universe = (symbols if symbols is not None
@@ -509,8 +509,8 @@ def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
     schedule = _rebalance_dates(panel.index, freq)
     _progress(progress, f"[{label or '回测'}] 调仓日共 {len(schedule)} 个，逐日推进…")
 
-    trades = []
-    baskets: dict = {}                    # 每调仓日的一篮子净收益（等权）
+    # 仓位槽账本：最多 top_n 并发、已持有不重复开仓，净值逐日盯市（替代旧"篮子连乘"）
+    book = SlotBook(top_n)
     _tot = len(schedule)
     _n = 0
     for t in schedule:
@@ -518,6 +518,9 @@ def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
         if progress and (_n % max(1, _tot // 10) == 0 or _n == _tot):
             _progress(progress,
                       f"[{label or '回测'}] 调仓日 {_n}/{_tot} ({_n / _tot:.0%})")
+        free = book.free(t)
+        if free <= 0:
+            continue
         as_of = pd.Timestamp(t).strftime("%Y-%m-%d")
         if cross_by_t is not None:
             cross = cross_by_t.get(t)
@@ -530,11 +533,12 @@ def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
             continue
         scored = score_factors(cross, weights=weights)
         tradable = set(_tradable(panel, t, limit_pct))
-        picks = _select_candidates(scored, tradable, frames, t, top_n,
+        held = book.held(t)
+        picks = _select_candidates(scored, tradable - held, frames, t, free,
                                    max_per_industry, gate, entry_gate,
                                    fund_params=fund_params,
-                                   random_seed=random_seed)
-        basket = []
+                                   random_seed=random_seed, held=held)
+        alloc = _regime_alloc(store, as_of) if regime else 1.0
         for sym in picks:
             fr = frames[sym]
             loc = fr.index.get_indexer([pd.Timestamp(t)])[0]
@@ -543,16 +547,14 @@ def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
             tr = position_fn(fr, entry_idx=loc, cost=config.backtest,
                              exit_params=exit_params, limit_pct=limit_pct)
             if tr is not None:
-                trades.append(tr)
-                basket.append(tr.ret)
-        if basket:
-            alloc = _regime_alloc(store, as_of) if regime else 1.0
-            baskets[pd.Timestamp(t)] = float(pd.Series(basket).mean()) * alloc
-    return _swing_metrics(trades, config.backtest, baskets)
+                book.add(t, tr, alloc)
+    equity = ledger_equity(book.accepted, frames, panel.index, top_n)
+    return _swing_metrics(book.trades, config.backtest, equity)
 
 
 def _select_candidates(scored, tradable, frames, t, top_n, max_per_industry,
-                       gate, entry_gate, fund_params=None, random_seed=None) -> list:
+                       gate, entry_gate, fund_params=None, random_seed=None,
+                       held=None) -> list:
     """按打分降序取候选：可成交 + 通过入场闸门 + 单行业≤上限，最多 top_n 只。
     fund_params 非空时，在价格门之上再叠加基本面安全门（ROE/PE）。
     random_seed 非空时，改为「种子化随机」从通过闸门的候选中等概率抽 top_n 只
@@ -561,6 +563,9 @@ def _select_candidates(scored, tradable, frames, t, top_n, max_per_industry,
     import random
     has_ind = "industry" in scored.columns
     per_ind: dict = {}
+    if held and has_ind:                 # 已持仓也占行业名额（单行业≤上限对整个组合生效）
+        for ind in scored.loc[scored["symbol"].isin(held), "industry"].dropna():
+            per_ind[ind] = per_ind.get(ind, 0) + 1
     passed: list = []                    # 通过全部闸门的候选（score 降序）
     ts = pd.Timestamp(t)
     for _, row in scored.iterrows():
