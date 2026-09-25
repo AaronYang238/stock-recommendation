@@ -29,6 +29,10 @@ backtest:
   cash: 1000000
   t_plus_1: true          # 模拟 T+1
   limit_up_down: true     # 涨跌停无法成交
+  # 可交易股票池过滤（用户无科创板/北交所权限，且回避 ST）：
+  exclude_star_market: true   # 剔除科创板(688/689)
+  exclude_bse: true           # 剔除北交所(4/8)
+  exclude_st: true            # 剔除 ST/*ST
 
 # ── 自动调度（收盘后增量同步；python -m aselect.scheduler）────
 scheduler:

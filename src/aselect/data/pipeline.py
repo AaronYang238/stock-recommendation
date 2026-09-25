@@ -25,8 +25,15 @@ def update_symbols(ds: DataSource, store: Storage) -> int:
 
 def update_daily(ds: DataSource, store: Storage, symbols: list[str],
                  adjust: str, start: str | None = None) -> int:
-    """增量拉取日线：从已存最后日期之后继续（分批 + 缓存 + 增量，第 3.1 节）。"""
+    """增量拉取日线：从已存最后日期之后继续（分批 + 缓存 + 增量，第 3.1 节）。
+
+    常驻不变量（hfq，2026-09，防"换基不重标"静默损坏复发）：
+    拉取窗口从 last-10 天开始（而非 last+1），一次查询既取新数据又取重叠窗口；
+    对重叠窗口逐日比对 拉取值 vs 存库值，close 相对差 >1% → 判为复权基准改变，
+    拒写该股并记 ERROR（baostock 后复权 anchor-stable，正常时重叠窗口应逐位一致）。
+    """
     n = 0
+    quarantined: list[tuple[str, float]] = []
     for sym in symbols:
         last = store.last_daily_date(sym, adjust)
         s = start
@@ -38,8 +45,30 @@ def update_daily(ds: DataSource, store: Storage, symbols: list[str],
             log.warning("拉取 %s 失败: %s", sym, e)
             continue
         cleaned = clean_daily(raw)
+        # ── hfq 常驻不变量：append 边界连续性 guard ──
+        if adjust == "hfq" and last and not cleaned.empty:
+            ov_start = (pd.to_datetime(last) - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+            try:
+                ov_fetched = clean_daily(ds.daily(sym, adjust, start=ov_start, end=last))
+                ov_stored = store.get_daily(sym, adjust, start=ov_start, end=last)
+                if not ov_fetched.empty and not ov_stored.empty:
+                    ov_fetched["date"] = pd.to_datetime(ov_fetched["date"])
+                    m = pd.merge(ov_fetched[["date", "close"]], ov_stored[["date", "close"]],
+                                 on="date", suffixes=("_f", "_s"))
+                    if not m.empty:
+                        rel = (m["close_f"] / m["close_s"] - 1).abs()
+                        if float(rel.max()) > 0.01:
+                            log.error(
+                                "hfq 不变量违反 %s: 重叠窗口 close 相对差 max=%.1f%% — "
+                                "疑似复权基准改变，拒写该股", sym, float(rel.max()) * 100)
+                            quarantined.append((sym, float(rel.max())))
+                            continue
+            except Exception as e:  # noqa: BLE001
+                log.warning("hfq 不变量检查 %s 失败(放行): %s", sym, e)
         store.upsert_daily(sym, cleaned, adjust)
         n += len(cleaned)
+    if quarantined:
+        log.error("hfq 不变量拒写 %d 只: %s", len(quarantined), quarantined[:10])
     log.info("增量写入日线 %d 行（adjust=%s）", n, adjust)
     return n
 
@@ -62,6 +91,39 @@ def build_universe(store: Storage, include_delisted: bool = True) -> list[str]:
     """回测/选股股票池。include_delisted=True 以避免幸存者偏差（第 3.1 节）。"""
     df = store.get_symbols(include_delisted=include_delisted)
     return df["symbol"].tolist()
+
+
+def filter_tradable_universe(store: Storage, config: Config,
+                             universe: list[str]) -> list[str]:
+    """按可交易口径过滤股票池（用户无科创板/北交所权限，且回避 ST）。
+
+    由 config.backtest 的 exclude_star_market / exclude_bse / exclude_st 控制，
+    默认全部开启。不影响"含退市防幸存者偏差"——只在 board/status 维度过滤。
+    保持相对顺序。"""
+    bt = config.backtest or {}
+    ex_star = bool(bt.get("exclude_star_market", True))
+    ex_bse = bool(bt.get("exclude_bse", True))
+    ex_st = bool(bt.get("exclude_st", True))
+    df = store.get_symbols(include_delisted=True)
+    meta = {}
+    for r in df.itertuples(index=False):
+        meta[getattr(r, "symbol", None)] = r
+    out = []
+    for s in universe:
+        # 科创板(688/689)：用户无交易权限
+        if ex_star and str(s).startswith(("688", "689")):
+            continue
+        # 北交所(4/8)：普通账户不可交易
+        if ex_bse and str(s).startswith(("4", "8")):
+            continue
+        r = meta.get(s)
+        if ex_st:
+            name = str(getattr(r, "name", "") or "").upper()
+            status = str(getattr(r, "status", "") or "")
+            if status == "ST" or "ST" in name:
+                continue
+        out.append(s)
+    return out
 
 
 def build_cross_section(store: Storage, config: Config,

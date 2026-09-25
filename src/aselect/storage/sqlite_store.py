@@ -11,6 +11,10 @@ import pandas as pd
 
 from .base import Storage
 
+
+class ScaleMismatchError(RuntimeError):
+    """hfq 复权基准突变（换基不重标）— 拒写以保护序列连续性（2026-09）。"""
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS symbols (
     symbol      TEXT PRIMARY KEY,
@@ -139,8 +143,22 @@ class SQLiteStorage(Storage):
 
     # ── daily ──
     def upsert_daily(self, symbol: str, df: pd.DataFrame, adjust: str) -> None:
+        """写入日线（OR-REPLACE）。
+
+        hfq 尺度 guard（2026-09-03，防"换基不重标"静默损坏，000004 型）：
+        所有写入者（每日同步/重同步/tushare 补齐）都经过本咽喉点。写入前取
+        该股已存最近若干交易日与新数据比对：
+        - 有重叠日期：重叠 close 比值偏离 >1% → 拒写（换基）
+        - 无重叠（纯追加）：新首日 vs 存量末日的单日收益，涨 >25% 拒（假跳
+          +1140% 型）；跌 >40% 才拒（退市整理期真实崩盘可达 -30%+，放宽）
+        - 存量与新数据之间隔 >20 个自然日（长停牌复牌，首日无涨跌幅限制）：
+          只拒涨幅 >100% 的极端假跳
+        非 hfq adjust 不启用。
+        """
         if df.empty:
             return
+        if adjust == "hfq":
+            self._check_hfq_scale(symbol, df)
         out = df.copy()
         out["symbol"] = symbol
         out["adjust"] = adjust
@@ -148,6 +166,45 @@ class SQLiteStorage(Storage):
                 "close", "volume", "amount", "turnover", "net_inflow"]
         out = out[[c for c in cols if c in out.columns]]
         self._upsert("daily", out, ["symbol", "date", "adjust"])
+
+    def _check_hfq_scale(self, symbol: str, df: pd.DataFrame) -> None:
+        """hfq 写入尺度校验：与存量尾部比对，换基即抛 ScaleMismatchError。"""
+        new = df[["date", "close"]].copy()
+        new["date"] = new["date"].astype(str)
+        new = new.dropna(subset=["close"]).sort_values("date")
+        if new.empty:
+            return
+        # 存量尾部（最多 10 行，只看尾部即可判定）
+        rows = self.conn.execute(
+            "SELECT date, close FROM daily WHERE symbol=? AND adjust='hfq' "
+            "ORDER BY date DESC LIMIT 10", (symbol,)).fetchall()
+        if not rows:
+            return  # 首次写入，无基准可比
+        stored = pd.DataFrame(rows, columns=["date", "close"]).sort_values("date")
+        stored["date"] = stored["date"].astype(str)
+        m = new.merge(stored, on="date", suffixes=("_n", "_s"))
+        if not m.empty:
+            rel = (pd.to_numeric(m["close_n"]) / pd.to_numeric(m["close_s"]) - 1).abs()
+            if float(rel.max()) > 0.01:
+                raise ScaleMismatchError(
+                    f"{symbol}: 重叠日期 close 尺度差 {float(rel.max()) * 100:.1f}% >1% — 换基拒写")
+            return
+        # 无重叠：连续性校验（新首日 vs 存量末日）
+        last_stored = stored.iloc[-1]
+        first_new = new.iloc[0]
+        gap_days = (pd.Timestamp(first_new["date"]) - pd.Timestamp(last_stored["date"])).days
+        r = float(first_new["close"]) / float(last_stored["close"]) - 1
+        if gap_days > 20:
+            # 长停牌复牌：首日无涨跌幅限制，只拦极端假跳
+            if r > 1.0:
+                raise ScaleMismatchError(
+                    f"{symbol}: 长隔追加涨幅 {r * 100:.0f}% >100% — 换基拒写")
+        elif r > 0.25:
+            raise ScaleMismatchError(
+                f"{symbol}: 追加首日涨幅 {r * 100:.0f}% >25% — 换基拒写")
+        elif r < -0.40:
+            raise ScaleMismatchError(
+                f"{symbol}: 追加首日跌幅 {r * 100:.0f}% <-40% — 换基拒写")
 
     def get_daily(self, symbol, adjust, start=None, end=None) -> pd.DataFrame:
         sql = "SELECT * FROM daily WHERE symbol=? AND adjust=?"

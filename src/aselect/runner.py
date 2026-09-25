@@ -13,7 +13,7 @@ from __future__ import annotations
 import pandas as pd
 
 from .config import Config
-from .data import build_cross_section, build_universe
+from .data import build_cross_section, build_universe, filter_tradable_universe
 from .engine import score_factors
 from .engine.factor_backtest import FactorBacktestReport, simulate
 from .storage import Storage
@@ -218,7 +218,7 @@ def run_swing_backtest(
     exit_params=None, limit_pct: float = 0.095, position_fn=None,
     regime: bool = False, entry_gate=None, symbols=None,
     frames=None, panel=None, progress: bool = False, label: str = "",
-    cross_by_t: dict | None = None,
+    cross_by_t: dict | None = None, random_seed: int | None = None,
 ):
     """组合级事件驱动回测：每周刷新候选(打分→入场闸门→单行业≤2→top_n)，
     每笔用 position_fn 逐日离场。返回 SwingReport。
@@ -228,6 +228,7 @@ def run_swing_backtest(
     entry_gate 可注入替代入场闸门(默认反追高)；symbols 可覆盖股票池(默认全宇宙含退市)。
     frames/panel/cross_by_t 预构建后传入可省去重复加载(供 OOS 里 base/fund 共用)。
     progress=True 时打印阶段与逐调仓日进度；label 为进度前缀。
+    random_seed 非空时改为种子化随机选股(供随机选股对照组，seed 固定可复现)。
     """
     from .engine.strategy_rules import ExitParams, entry_gate as _default_gate
     from .engine.swing_backtest import simulate_position
@@ -235,7 +236,8 @@ def run_swing_backtest(
                       weights, gate, exit_params or ExitParams(), limit_pct,
                       entry_gate or _default_gate, position_fn or simulate_position,
                       regime=regime, symbols=symbols, frames=frames, panel=panel,
-                      progress=progress, label=label, cross_by_t=cross_by_t)
+                      progress=progress, label=label, cross_by_t=cross_by_t,
+                      random_seed=random_seed)
 
 
 def run_fundamental_backtest(
@@ -384,7 +386,8 @@ def run_validated_fund_backtest(
     oos 为对外头条指标（禁止在其上反复调参）。
     """
     adjust = config.datasource.get("adjust", "hfq")
-    universe = build_universe(store, include_delisted=True)
+    universe = filter_tradable_universe(store, config,
+                                        build_universe(store, include_delisted=True))
     panel = _price_panel(store, universe, adjust, start, end)
     schedule = _rebalance_dates(panel.index, freq)
     if len(schedule) < 4:
@@ -489,11 +492,14 @@ def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
                weights, gate, exit_params, limit_pct, entry_gate, position_fn,
                regime: bool = False, symbols=None, fund_params=None,
                frames=None, panel=None, progress: bool = False,
-               label: str = "", cross_by_t: dict | None = None):
+               label: str = "", cross_by_t: dict | None = None,
+               random_seed: int | None = None):
     from .engine.swing_backtest import SwingReport, _swing_metrics
 
     adjust = config.datasource.get("adjust", "hfq")
-    universe = symbols if symbols is not None else build_universe(store, include_delisted=True)
+    universe = (symbols if symbols is not None
+                else filter_tradable_universe(store, config,
+                                              build_universe(store, include_delisted=True)))
     if frames is None:
         frames = _ohlc_frames(store, universe, adjust, start, end)
     if panel is None:
@@ -526,7 +532,8 @@ def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
         tradable = set(_tradable(panel, t, limit_pct))
         picks = _select_candidates(scored, tradable, frames, t, top_n,
                                    max_per_industry, gate, entry_gate,
-                                   fund_params=fund_params)
+                                   fund_params=fund_params,
+                                   random_seed=random_seed)
         basket = []
         for sym in picks:
             fr = frames[sym]
@@ -545,13 +552,16 @@ def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
 
 
 def _select_candidates(scored, tradable, frames, t, top_n, max_per_industry,
-                       gate, entry_gate, fund_params=None) -> list:
+                       gate, entry_gate, fund_params=None, random_seed=None) -> list:
     """按打分降序取候选：可成交 + 通过入场闸门 + 单行业≤上限，最多 top_n 只。
-    fund_params 非空时，在价格门之上再叠加基本面安全门（ROE/PE）。"""
+    fund_params 非空时，在价格门之上再叠加基本面安全门（ROE/PE）。
+    random_seed 非空时，改为「种子化随机」从通过闸门的候选中等概率抽 top_n 只
+    （供随机选股对照组；seed 固定 → 结果可复现，确定性纪律不变）。"""
     from .engine.strategy_rules import fundamental_safety
+    import random
     has_ind = "industry" in scored.columns
     per_ind: dict = {}
-    picks: list = []
+    passed: list = []                    # 通过全部闸门的候选（score 降序）
     ts = pd.Timestamp(t)
     for _, row in scored.iterrows():
         sym = row["symbol"]
@@ -571,12 +581,76 @@ def _select_candidates(scored, tradable, frames, t, top_n, max_per_industry,
         ind = row["industry"] if has_ind and pd.notna(row.get("industry")) else None
         if ind is not None and per_ind.get(ind, 0) >= max_per_industry:
             continue
-        picks.append(sym)
+        passed.append(sym)
         if ind is not None:
             per_ind[ind] = per_ind.get(ind, 0) + 1
-        if len(picks) >= top_n:
+        if not random_seed and len(passed) >= top_n:
             break
-    return picks
+    if random_seed is not None:
+        rng = random.Random(random_seed)
+        pool = list(passed)
+        rng.shuffle(pool)
+        return pool[:top_n]
+    return passed[:top_n]
+
+
+def run_swing_portfolio(
+    store: Storage, config: Config,
+    start: str | None = None, end: str | None = None,
+    freq: str = "W", top_n: int = 10, max_per_industry: int = 2,
+    weights: dict | None = None, gate: bool = True,
+    exit_params=None, limit_pct: float = 0.095,
+    regime: bool = False, entry_gate=None, symbols=None,
+    fund_params=None, frames=None, panel=None, progress: bool = False,
+    label: str = "", cross_by_t: dict | None = None,
+) -> "PortfolioReport":
+    """组合级真实会计回测（Model A 滚动账本·仓位上限 top_n·逐日盯市）。
+
+    与 run_swing_backtest 同款选股/闸门/离场，但净值按真实组合 P&L 计算：
+    现金记账、逐日盯市、跨周持仓、现金空窗拖累、T+1 撮合。修复旧「每周篮子
+    收益连乘」会计不自洽的问题。返回 PortfolioReport（每日净值曲线）。
+    """
+    from .engine.portfolio import simulate_portfolio
+    from .engine.strategy_rules import ExitParams, entry_gate as _default_gate
+
+    adjust = config.datasource.get("adjust", "hfq")
+    universe = (symbols if symbols is not None
+                else filter_tradable_universe(store, config,
+                                              build_universe(store, include_delisted=True)))
+    if frames is None:
+        frames = _ohlc_frames(store, universe, adjust, start, end)
+    if panel is None:
+        panel = _price_panel(store, universe, adjust, start, end)
+    if panel.shape[0] < 2 or not frames:
+        from .engine.portfolio import PortfolioReport
+        return PortfolioReport(0.0, 0.0, 0.0, 0, 0.0)
+    schedule = _rebalance_dates(panel.index, freq)
+
+    if cross_by_t is None:
+        _progress(progress, f"[{label or '组合'}] 构建 {len(schedule)} 个调仓日截面…")
+        cross_by_t = {}
+        for i, t in enumerate(schedule):
+            cross_by_t[t] = build_cross_section(
+                store, config, symbols=universe,
+                as_of=pd.Timestamp(t).strftime("%Y-%m-%d"), frames=frames)
+            if progress and (i + 1) % max(1, len(schedule) // 10) == 0:
+                _progress(progress, f"[{label or '组合'}] 截面 {i+1}/{len(schedule)}")
+
+    picks_by_t: dict = {}
+    for t in schedule:
+        cross = cross_by_t.get(t)
+        if cross is None or cross.empty:
+            continue
+        scored = score_factors(cross, weights=weights)
+        tradable = set(_tradable(panel, t, limit_pct))
+        picks_by_t[t] = _select_candidates(
+            scored, tradable, frames, t, top_n, max_per_industry, gate,
+            entry_gate or _default_gate, fund_params=fund_params)
+
+    cash0 = float(config.backtest.get("cash", 1_000_000))
+    return simulate_portfolio(frames, panel, schedule, picks_by_t, top_n,
+                              config.backtest, exit_params or ExitParams(),
+                              limit_pct, cash0)
 
 
 def latest_candidates(store: Storage, config: Config, top_n: int = 10) -> list:
