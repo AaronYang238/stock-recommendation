@@ -130,35 +130,69 @@ def build_universe(store: Storage, include_delisted: bool = True) -> list[str]:
 
 def filter_tradable_universe(store: Storage, config: Config,
                              universe: list[str]) -> list[str]:
-    """按可交易口径过滤股票池（用户无科创板/北交所权限，且回避 ST）。
+    """按**板块**口径过滤股票池（用户无科创板/北交所权限）。保持相对顺序。
 
-    由 config.backtest 的 exclude_star_market / exclude_bse / exclude_st 控制，
-    默认全部开启。不影响"含退市防幸存者偏差"——只在 board/status 维度过滤。
-    保持相对顺序。"""
+    注意：ST 不在这里剔除。股票池是整段回测共用的静态列表，若按"现在的名字"剔 ST，
+    会把"今天是 ST、当年还正常"的股票从历史里提前拿掉（前视：提前排除了未来的输家），
+    并连带剔掉几乎所有退市股（退市前多已戴帽）→ 幸存者偏差。ST 改为逐调仓日按当时
+    简称判定：见 build_cross_section 的 is_st 列与 exclude_st_rows。
+    """
     bt = config.backtest or {}
     ex_star = bool(bt.get("exclude_star_market", True))
     ex_bse = bool(bt.get("exclude_bse", True))
-    ex_st = bool(bt.get("exclude_st", True))
-    df = store.get_symbols(include_delisted=True)
-    meta = {}
-    for r in df.itertuples(index=False):
-        meta[getattr(r, "symbol", None)] = r
     out = []
     for s in universe:
         # 科创板(688/689)：用户无交易权限
         if ex_star and str(s).startswith(("688", "689")):
             continue
-        # 北交所(4/8)：普通账户不可交易
-        if ex_bse and str(s).startswith(("4", "8")):
+        # 北交所(4/8/920)：普通账户不可交易
+        if ex_bse and str(s).startswith(("4", "8", "920")):
             continue
-        r = meta.get(s)
-        if ex_st:
-            name = str(getattr(r, "name", "") or "").upper()
-            status = str(getattr(r, "status", "") or "")
-            if status == "ST" or "ST" in name:
-                continue
         out.append(s)
     return out
+
+
+_warned_no_name_history = False
+
+
+def st_flags(store: Storage, symbols: list[str], as_of: str | None,
+             meta: pd.DataFrame | None = None) -> pd.Series:
+    """symbol → 该日是否 ST（PIT）。
+
+    - as_of=None（实盘）：用当前简称/状态。
+    - 有简称历史：用 as_of 当日的简称判定。
+    - 无简称历史：无法得知当年状态 → 一律记 False（宁可纳入，也不用"现在的名字"回看历史），
+      并告警一次；请先运行 `backfill --what names`。
+    """
+    from .symbols import is_st_name
+    global _warned_no_name_history
+    idx = pd.Index(symbols)
+    if as_of is None:
+        meta = meta if meta is not None else store.get_symbols()
+        m = meta.set_index("symbol")
+        name = m["name"].reindex(idx)
+        status = m["status"].reindex(idx) if "status" in m.columns else None
+        flag = name.map(is_st_name)
+        if status is not None:
+            flag = flag | (status == "ST")
+        return flag.fillna(False).astype(bool)
+    if not store.has_name_history():
+        if not _warned_no_name_history:
+            log.warning("无简称历史，历史 ST 无法按日判定（不剔除）；"
+                        "请运行 `python -m aselect.cli backfill --what names`")
+            _warned_no_name_history = True
+        return pd.Series(False, index=idx)
+    names = store.names_as_of(as_of, list(symbols))
+    return pd.Series([is_st_name(names.get(s)) for s in idx], index=idx, dtype=bool)
+
+
+def exclude_st_rows(cross: pd.DataFrame, config: Config) -> pd.DataFrame:
+    """按 config.backtest.exclude_st 剔除当日 ST 的行（依赖截面 is_st 列）。"""
+    if cross is None or cross.empty or "is_st" not in cross.columns:
+        return cross
+    if not bool((config.backtest or {}).get("exclude_st", True)):
+        return cross
+    return cross[~cross["is_st"].astype(bool)]
 
 
 def build_cross_section(store: Storage, config: Config,
@@ -265,6 +299,7 @@ def build_cross_section(store: Storage, config: Config,
     cross = cross.merge(meta, on="symbol", how="left")
     cross["board"] = cross["symbol"].map(classify_board)
     cross["status_label"] = cross["status"].map(status_label)
+    cross["is_st"] = st_flags(store, list(cross["symbol"]), as_of, sym_meta).values
 
     # 热点因子（板块聚合，正交因子；缺输入列时该列记 NaN）
     cross = add_hotspot_factor(cross)

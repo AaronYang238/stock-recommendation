@@ -13,7 +13,8 @@ from __future__ import annotations
 import pandas as pd
 
 from .config import Config
-from .data import build_cross_section, build_universe, filter_tradable_universe
+from .data import (build_cross_section, build_universe, exclude_st_rows,
+                   filter_tradable_universe)
 from .engine import score_factors
 from .engine.factor_backtest import FactorBacktestReport, simulate
 from .storage import Storage
@@ -28,7 +29,9 @@ def run_strategy_backtest(
     weights: dict | None = None,
 ) -> FactorBacktestReport:
     adjust = config.datasource.get("adjust", "hfq")
-    universe = build_universe(store, include_delisted=True)   # 含退市/ST
+    # 含退市（防幸存者偏差）；板块按账户权限过滤，ST 逐日剔除
+    universe = filter_tradable_universe(store, config,
+                                        build_universe(store, include_delisted=True))
     panel = _price_panel(store, universe, adjust, start, end)
     if panel.shape[0] < 2 or panel.shape[1] == 0:
         return simulate(panel, [], {}, {}, pd.Series(dtype=float), config.backtest)
@@ -38,7 +41,8 @@ def run_strategy_backtest(
     scores: dict = {}
     for t in schedule:
         as_of = pd.Timestamp(t).strftime("%Y-%m-%d")
-        cross = build_cross_section(store, config, symbols=universe, as_of=as_of)
+        cross = exclude_st_rows(
+            build_cross_section(store, config, symbols=universe, as_of=as_of), config)
         if cross.empty:
             selections[t], scores[t] = {}, pd.Series(dtype=float)
             continue
@@ -73,7 +77,8 @@ def run_factor_research(store: Storage, config: Config, factors: dict | None = N
 
     factors = factors or DEFAULT_FACTORS
     adjust = config.datasource.get("adjust", "hfq")
-    universe = build_universe(store, include_delisted=True)
+    universe = filter_tradable_universe(store, config,
+                                        build_universe(store, include_delisted=True))
     panel = _price_panel(store, universe, adjust, start, end)
     if panel.shape[0] < 2 or panel.shape[1] == 0:
         return {}
@@ -143,7 +148,8 @@ def run_validated_strategy(store: Storage, config: Config, freq: str = "M",
     start/end 可限定回测窗口（如近 5 年）以降内存峰值。
     """
     adjust = config.datasource.get("adjust", "hfq")
-    universe = build_universe(store, include_delisted=True)
+    universe = filter_tradable_universe(store, config,
+                                        build_universe(store, include_delisted=True))
     panel = _price_panel(store, universe, adjust, start, end)
     schedule = _rebalance_dates(panel.index, freq)
     if len(schedule) < 4:
@@ -274,7 +280,8 @@ def _leftside_symbols(store, pool: str):
     """左侧回测股票池。
 
     pool='filtered' → 返回 None，沿用右侧因子打分/选股池，仅换入场闸门（对比干净）。
-    pool='broad'    → 全部非科创板、非 ST、非北交所/指数/B股的 A 股（含退市，防幸存者偏差）。
+    pool='broad'    → 全部非科创板、非北交所/指数/B股的 A 股（含退市，防幸存者偏差）；
+                      ST 由回测逐调仓日按当时简称剔除。
     """
     if pool == "filtered":
         return None
@@ -292,10 +299,7 @@ def _leftside_symbols(store, pool: str):
                 continue
         else:
             continue                                  # BSE(北交所)/其他 剔除
-        name = str(r.get("name") or "").upper()
-        status = str(r.get("status") or "")
-        if status == "ST" or "ST" in name:            # 剔除 ST/*ST
-            continue
+        # ST 不在此按"现在的名字"剔除（前视+幸存者偏差），由回测逐日按当时简称剔除
         out.append(sym)
     return out
 
@@ -345,7 +349,8 @@ def run_validated_swing(store: Storage, config: Config, freq: str = "W",
     start/end 可限定回测窗口（如近 5 年）以降内存峰值。
     """
     adjust = config.datasource.get("adjust", "hfq")
-    universe = build_universe(store, include_delisted=True)
+    universe = filter_tradable_universe(store, config,
+                                        build_universe(store, include_delisted=True))
     panel = _price_panel(store, universe, adjust, start, end)
     schedule = _rebalance_dates(panel.index, freq)
     if len(schedule) < 4:
@@ -529,6 +534,7 @@ def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
         else:
             cross = build_cross_section(store, config, symbols=universe, as_of=as_of,
                                         frames=frames)
+        cross = exclude_st_rows(cross, config)          # 当日 ST（按当时简称）
         if cross.empty:
             continue
         scored = score_factors(cross, weights=weights)
@@ -643,7 +649,7 @@ def run_swing_portfolio(
 
     picks_by_t: dict = {}
     for t in schedule:
-        cross = cross_by_t.get(t)
+        cross = exclude_st_rows(cross_by_t.get(t), config)
         if cross is None or cross.empty:
             continue
         scored = score_factors(cross, weights=weights)
@@ -666,8 +672,10 @@ def latest_candidates(store: Storage, config: Config, top_n: int = 10) -> list:
     from .engine.strategy_rules import entry_gate
 
     adjust = config.datasource.get("adjust", "hfq")
-    universe = build_universe(store, include_delisted=True)
-    cross = build_cross_section(store, config, symbols=universe)   # as_of=None → 最新
+    universe = filter_tradable_universe(store, config,
+                                        build_universe(store, include_delisted=True))
+    cross = exclude_st_rows(build_cross_section(store, config, symbols=universe),
+                            config)                            # as_of=None → 最新
     if cross.empty:
         return []
     if "status" in cross.columns:                     # 实盘候选剔除已退市（回测池才含退市）
