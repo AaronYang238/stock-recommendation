@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import logging
 
+import pandas as pd
+
 from .config import load_config
 from .data import (build_cross_section, save_fundamentals_snapshot, update_daily,
                    update_index, update_symbols)
@@ -401,6 +403,153 @@ def _backtest(args):
     store.close()
 
 
+def _fund_sync(args):
+    """基金数据同步：名单 → 初筛 → 净值历史落库（幂等）。"""
+    from .fund.pipeline import sync_benchmark, sync_nav, sync_universe
+    cfg = load_config()
+    store = get_storage(cfg)
+    fcfg = cfg.raw.get("fund", {}) or {}
+    limit = getattr(args, "limit", 0)
+    cand = sync_universe(store, fcfg)
+    print(f"初筛后候选 {len(cand)} 只（fund_info 总数 "
+          f"{store.get_fund_info().shape[0]}）。")
+    codes = cand["fund_code"].tolist()
+    if limit:
+        codes = codes[:limit]
+    if not codes:
+        print("⚠️ 初筛后无候选：检查 fund.screen 阈值或名单接口。")
+        store.close()
+        return
+    ok = sync_nav(store, codes, fcfg)
+    bench = str(fcfg.get("benchmark", "000300"))
+    if sync_benchmark(store, bench):
+        print(f"基准 {bench} 已更新。")
+    print(f"净值落库完成：{ok}/{len(codes)} 只成功。")
+    store.close()
+
+
+def _fund_screen(args):
+    """基金筛选 + TopN 推荐（含相关持仓重叠提示，重仓数据实时拉）。"""
+    import time as _t
+    cfg = load_config()
+    store = get_storage(cfg)
+    fcfg = cfg.raw.get("fund", {}) or {}
+    info = store.get_fund_info()
+    codes = store.fund_codes_with_nav()
+    if not codes:
+        print("无基金净值数据，先跑 fund-sync。")
+        store.close()
+        return
+    from .fund.strategy import cross_section_factors, composite_score
+    wide = store.get_fund_nav_wide(start=_nav_start_for_screen(fcfg))
+    fac = cross_section_factors(wide, wide.index.max(), info)
+    if fac.empty:
+        print("候选基金历史不足，无法打分。")
+        store.close()
+        return
+    w = (fcfg.get("weights", {}) or {}).get("fixed") or None
+    from .fund.strategy import DEFAULT_FIXED
+    scores = composite_score(fac, w or DEFAULT_FIXED)
+    top_n = int(args.top or fcfg.get("top_n", 10))
+    top = scores.head(top_n)
+    names = dict(zip(info["fund_code"], info["name"])) if not info.empty else {}
+    print(f"\n[基金 Top{top_n}]（截至 {wide.index.max().date()}）")
+    for rank, (code, sc) in enumerate(top.items(), 1):
+        print(f"{rank:2d}. {code} {names.get(code, '')[:20]:<20s} "
+              f"score={sc:+.3f}")
+    if args.holds:
+        print("\n[重仓股重叠提示]（Top10 内两两对比，>30% 告警）")
+        hold_map = {}
+        for code in top.index:
+            raw = code[4:] if code.startswith("etf:") else code
+            try:
+                from .fund.datasource import fetch_fund_holds
+                h = fetch_fund_holds(raw, str(pd.Timestamp.today().year - 1))
+                hold_map[code] = set(h["symbol"]) if not h.empty else set()
+            except Exception:  # noqa: BLE001
+                hold_map[code] = set()
+            _t.sleep(0.5)
+        codes_l = list(hold_map)
+        for i in range(len(codes_l)):
+            for j in range(i + 1, len(codes_l)):
+                a, b = hold_map[codes_l[i]], hold_map[codes_l[j]]
+                if a and b:
+                    ov = len(a & b) / min(len(a), len(b))
+                    if ov > 0.3:
+                        print(f"⚠️ {codes_l[i]} × {codes_l[j]} 重叠 {ov:.0%}")
+    print(f"\n{cfg.disclaimer}")
+    store.close()
+
+
+def _nav_start_for_screen(fcfg: dict) -> str:
+    # 打分需要 ≥126 交易日净值 → 多留 8 个月
+    return (pd.Timestamp.today() - pd.Timedelta(days=560)).strftime("%Y-%m-%d")
+
+
+def _fund_backtest(args):
+    """基金策略月频回测（扣申赎费 + T+1 确认），报告 vs 沪深300。"""
+    from .fund.backtest import FundFeeModel, run_fund_backtest
+    from .fund.recommend import build_monthly_scores
+    from .fund.strategy import cross_section_factors
+    cfg = load_config()
+    store = get_storage(cfg)
+    fcfg = cfg.raw.get("fund", {}) or {}
+    info = store.get_fund_info()
+    wide = store.get_fund_nav_wide(start=args.start)
+    if wide.empty or wide.shape[1] < 5:
+        print("基金净值数据不足，先跑 fund-sync。")
+        store.close()
+        return
+    wmode = (fcfg.get("weights", {}) or {})
+    scores = build_monthly_scores(
+        wide, info, mode=str(wmode.get("mode", "icir")),
+        shrink=float(wmode.get("shrink", 0.5)),
+        max_weight=float(wmode.get("max_weight", 0.4)),
+        fixed=wmode.get("fixed") or None,
+        start=args.start, end=args.end)
+    if not scores:
+        print("无有效调仓期。")
+        store.close()
+        return
+    fee = FundFeeModel.from_config(fcfg)
+    bench_code = str(fcfg.get("benchmark", "000300"))
+    bench = store.get_index(bench_code)
+    bench_close = (pd.Series(bench["close"].values,
+                             index=pd.to_datetime(bench["date"]))
+                   if not bench.empty else pd.Series(dtype=float))
+    res = run_fund_backtest(wide, bench_close, scores,
+                            fee=fee, top_n=int(fcfg.get("top_n", 10)),
+                            confirm_lag=int(fcfg.get("confirm_lag", 1)),
+                            start=args.start, end=args.end)
+    s = res.summary()
+    print("\n===== 基金策略回测报告（全部申赎费已扣）=====")
+    print(f"区间: {s.get('start')} ~ {s.get('end')} | 调仓 {s.get('n_rebalances')} 次 | "
+          f"交易成本合计 {s.get('turnover_costs', 0):,.0f} 元")
+    print(f"年化 {s.get('ann_ret', 0):+.2%} | 夏普 {s.get('sharpe', 0):.2f} | "
+          f"最大回撤 {s.get('max_dd', 0):.2%} | Calmar {s.get('calmar', 0):.2f}")
+    if "bench_ann_ret" in s:
+        print(f"基准({bench_code}): 年化 {s['bench_ann_ret']:+.2%} | "
+              f"夏普 {s['bench_sharpe']:.2f} | 回撤 {s['bench_max_dd']:.2%} | "
+              f"Calmar {s['bench_calmar']:.2f}")
+    print("分年收益（策略 vs 基准）:")
+    for y, r in sorted(s.get("yearly", {}).items()):
+        br = s.get("bench_yearly", {}).get(y)
+        print(f"  {y}: {r:+.2%}" + (f"  (基准 {br:+.2%})" if br is not None else ""))
+    mwr = s.get("monthly_win_rate_display_only")
+    if mwr is not None:
+        print(f"月度胜率 {mwr:.0%}（仅展示，非优化目标）")
+    if args.oos:
+        from .runner import _with_oos_audit
+        from .fund.backtest import FundBacktestResult  # noqa: F401
+        split = str(res.equity.index[0].date())
+        out = {"oos": res}
+        _with_oos_audit(store, "fund_monthly", split, args.end, out)
+        print(f"[OOS] 登记使用次数: {out.get('oos_uses')} | "
+              f"DSR: {out.get('dsr')}")
+    print(f"\n{cfg.disclaimer}")
+    store.close()
+
+
 def _fundamental(args):
     """右侧摆动回测 + 基本面安全门：A/B 对比（无基本面 vs 加 ROE/PE 门）。
 
@@ -577,6 +726,22 @@ def main():
 
     se = sub.add_parser("sentiment", help="AI 舆情情绪 → 正交因子入库（AI 关则中性）")
     se.set_defaults(func=_sentiment)
+
+    fsy = sub.add_parser("fund-sync", help="基金名单+初筛+净值历史落库（幂等）")
+    fsy.add_argument("--limit", type=int, default=0, help="仅前 N 只净值（调试用）；0=全部")
+    fsy.set_defaults(func=_fund_sync)
+
+    fsc = sub.add_parser("fund-screen", help="基金筛选 + TopN 推荐")
+    fsc.add_argument("--top", type=int, default=0, help="TopN（默认取 config fund.top_n）")
+    fsc.add_argument("--holds", action="store_true", help="拉重仓股做重叠提示（网络）")
+    fsc.set_defaults(func=_fund_screen)
+
+    fbt = sub.add_parser("fund-backtest", help="基金策略月频回测（扣申赎费，vs 沪深300）")
+    fbt.add_argument("--start", default="2021-01-01")
+    fbt.add_argument("--end")
+    fbt.add_argument("--oos", action="store_true",
+                     help="样本外纪律：登记使用次数 + Deflated Sharpe")
+    fbt.set_defaults(func=_fund_backtest)
 
     args = p.parse_args()
     args.func(args)

@@ -56,6 +56,34 @@ ai:
     nl_to_filter: false
     report_generation: true
 
+# ── 基金推荐子系统（v1：净值动量+风险调整，月频，扣申赎费）────
+fund:
+  top_n: 10                  # TopN 推荐数量（等权）
+  rebalance_day: last        # 调仓日：last=每月最后一个交易日
+  confirm_lag: 1             # 场外申赎 T+1 净值确认
+  screen:                    # 初筛阈值
+    min_scale_yi: 2          # 最新规模下限（亿元）
+    min_age_days: 365        # 成立天数下限
+    min_ret_1y: 0.0          # 近1年收益下限（近1年夏普>0 的可得代理）
+  fee:                       # 场外申赎费率（外扣法）
+    subscribe: 0.0015        # 打折后申购费
+    redeem_lte7d: 0.015      # 持有<7天惩罚性赎回费（必须建模）
+    redeem_lte30d: 0.0075    # <30天
+    redeem_lte365d: 0.005    # <365天
+    redeem_gt365d: 0.0       # ≥365天
+  etf:                       # 场内 ETF 摩擦
+    commission: 0.00025      # 佣金万2.5
+    slippage: 0.0005         # 滑点 5bps
+  weights:                   # 合成权重（默认 ICIR 收缩定权；固定权重备用）
+    mode: fixed              # icir | fixed（v1 预注册：fixed 权重；icir 供对比研究）
+    shrink: 0.5              # 向正 IC 因子等权收缩比例
+    max_weight: 0.4          # 单因子权重上限
+    fixed: {dd_pen: 0.55, mom3: 0.15, mom6: 0.1, size_fee: 0.2}
+  benchmark: "000300"        # 对比基准（新浪源 sh000300）
+  sync:
+    sleep_s: 0.3             # akshare 限速（基本信息批量拉）
+    retry: 3
+
 # ── 通知（配置驱动·热插拔；未启用或缺 webhook 时回退 NullNotifier）──
 notify:
   enabled: false          # 全局开关；false 时核心照跑，仅本地打印候选

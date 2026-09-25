@@ -84,5 +84,27 @@ class Storage(ABC):
     def data_status(self) -> dict:
         return {}
 
+    # ── 基金推荐子系统（可选实现；只有 SQLite 后端 v1 落地）──
+    def upsert_fund_info(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def get_fund_info(self, kind: str | None = None) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    def upsert_fund_nav(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def get_fund_nav(self, fund_code: str, start: str | None = None,
+                     end: str | None = None) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    def get_fund_nav_wide(self, fund_codes: list[str] | None = None,
+                          start: str | None = None,
+                          end: str | None = None) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    def fund_codes_with_nav(self) -> list[str]:
+        return []
+
     def close(self) -> None:  # 可选实现
         pass

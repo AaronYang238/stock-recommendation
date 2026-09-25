@@ -133,6 +133,32 @@ CREATE TABLE IF NOT EXISTS app_state (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- 基金推荐子系统：基金名单/元数据 + 单位净值历史
+CREATE TABLE IF NOT EXISTS fund_info (
+    fund_code   TEXT PRIMARY KEY,
+    name        TEXT,
+    kind        TEXT,             -- open(场外) / etf(场内)
+    fund_type   TEXT,             -- 股票型/混合型-灵活 等
+    setup_date  TEXT,             -- 成立日期
+    scale_yi    REAL,             -- 最新规模（亿元）
+    fee_rate    REAL,             -- 申购费率（小数，0.0015=0.15%）
+    nav_date    TEXT,             -- 名单快照的净值日期
+    nav         REAL,             -- 单位净值（快照）
+    accum_nav   REAL,             -- 累计净值（快照）
+    ret_1w REAL, ret_1m REAL, ret_3m REAL,
+    ret_6m REAL, ret_1y REAL, ret_2y REAL, ret_3y REAL,
+    updated_at  TEXT              -- 快照拉取日
+);
+
+CREATE TABLE IF NOT EXISTS fund_nav (
+    fund_code TEXT NOT NULL,
+    nav_date  TEXT NOT NULL,
+    nav       REAL,               -- 单位净值
+    accum_nav REAL,               -- 累计净值（可空）
+    PRIMARY KEY (fund_code, nav_date)
+);
+CREATE INDEX IF NOT EXISTS idx_fundnav_code ON fund_nav(fund_code);
 """
 
 
@@ -467,6 +493,62 @@ class SQLiteStorage(Storage):
         cur = self.conn.execute("SELECT value FROM app_state WHERE key=?", (key,))
         row = cur.fetchone()
         return row[0] if row else None
+
+    # ── 基金推荐子系统 ──
+    def upsert_fund_info(self, df: pd.DataFrame) -> None:
+        self._upsert("fund_info", df, ["fund_code"])
+
+    def get_fund_info(self, kind: str | None = None) -> pd.DataFrame:
+        sql = "SELECT * FROM fund_info"
+        params: list = []
+        if kind:
+            sql += " WHERE kind=?"; params.append(kind)
+        return pd.read_sql(sql, self.conn, params=params)
+
+    def upsert_fund_nav(self, df: pd.DataFrame) -> None:
+        """净值落库（幂等：PK(fund_code, nav_date) OR-REPLACE）。"""
+        self._upsert("fund_nav", df, ["fund_code", "nav_date"])
+
+    def get_fund_nav(self, fund_code: str, start: str | None = None,
+                     end: str | None = None) -> pd.DataFrame:
+        sql = "SELECT fund_code, nav_date, nav, accum_nav FROM fund_nav WHERE fund_code=?"
+        params: list = [fund_code]
+        if start:
+            sql += " AND nav_date>=?"; params.append(start)
+        if end:
+            sql += " AND nav_date<=?"; params.append(end)
+        sql += " ORDER BY nav_date"
+        df = pd.read_sql(sql, self.conn, params=params)
+        if not df.empty:
+            df["nav_date"] = pd.to_datetime(df["nav_date"])
+        return df
+
+    def get_fund_nav_wide(self, fund_codes: list[str] | None = None,
+                          start: str | None = None,
+                          end: str | None = None) -> pd.DataFrame:
+        """宽表：index=nav_date, columns=fund_code, values=nav（对齐用）。"""
+        sql = "SELECT fund_code, nav_date, nav FROM fund_nav"
+        conds, params = [], []
+        if fund_codes:
+            conds.append(f"fund_code IN ({','.join('?' * len(fund_codes))})")
+            params += list(fund_codes)
+        if start:
+            conds.append("nav_date>=?"); params.append(start)
+        if end:
+            conds.append("nav_date<=?"); params.append(end)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        df = pd.read_sql(sql, self.conn, params=params)
+        if df.empty:
+            return df
+        df["nav_date"] = pd.to_datetime(df["nav_date"])
+        wide = (df.pivot_table(index="nav_date", columns="fund_code",
+                               values="nav", aggfunc="last").sort_index())
+        return wide
+
+    def fund_codes_with_nav(self) -> list[str]:
+        cur = self.conn.execute("SELECT DISTINCT fund_code FROM fund_nav")
+        return [r[0] for r in cur.fetchall()]
 
     # ── 内部：基于主键的 upsert ──
     def _upsert(self, table: str, df: pd.DataFrame, keys: list[str]) -> None:
