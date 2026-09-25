@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .base import DataSource
+from .base import DataSource, first_disclosure
 
 _ADJUST = {"hfq": "1", "qfq": "2", "none": "3"}     # baostock 复权标志
 
@@ -127,7 +127,8 @@ class BaostockSource(DataSource):
         if df.empty:
             return {}
         last = df.iloc[-1]
-        return {"pe": _f(last.get("peTTM")), "pb": _f(last.get("pbMRQ")),
+        return {"val_date": last.get("date"),
+                "pe": _f(last.get("peTTM")), "pb": _f(last.get("pbMRQ")),
                 "ps": _f(last.get("psTTM")), "_close": _f(last.get("close"))}
 
     def _financials(self, code: str) -> dict:
@@ -156,6 +157,74 @@ class BaostockSource(DataSource):
                 pass
             break
         return out
+
+    # ── 历史 PIT 数据（backfill；baostock 按标的拉取）──
+    def trade_dates(self, start: str, end: str) -> list[str]:
+        df = self._df(self.bs.query_trade_dates(start_date=start, end_date=end))
+        if df.empty:
+            return []
+        return sorted(df.loc[df["is_trading_day"] == "1", "calendar_date"].tolist())
+
+    def valuation_history(self, symbol: str, start: str, end: str | None = None) -> pd.DataFrame:
+        """逐日 peTTM/pbMRQ/psTTM/换手。baostock 无逐日市值 → total_mv 缺失（市值中性退化）。"""
+        code = self._to_bs(symbol)
+        if not code:
+            return pd.DataFrame()
+        df = self._df(self.bs.query_history_k_data_plus(
+            code, "date,peTTM,pbMRQ,psTTM,turn", start_date=start, end_date=end or "",
+            frequency="d", adjustflag="3"))
+        if df.empty:
+            return df
+        return pd.DataFrame({
+            "symbol": symbol, "date": df["date"],
+            "pe": pd.to_numeric(df["peTTM"], errors="coerce"),
+            "pb": pd.to_numeric(df["pbMRQ"], errors="coerce"),
+            "ps": pd.to_numeric(df["psTTM"], errors="coerce"),
+            "turnover_rate": pd.to_numeric(df["turn"], errors="coerce"),
+        })
+
+    def fundamentals_history(self, symbol: str, start: str) -> pd.DataFrame:
+        code = self._to_bs(symbol)
+        if not code:
+            return pd.DataFrame()
+        y0 = pd.Timestamp(start).year
+        now = pd.Timestamp.today()
+        rows = []
+        for year in range(y0, now.year + 1):
+            for q in (1, 2, 3, 4):
+                prof = self._df(self.bs.query_profit_data(code=code, year=year, quarter=q))
+                if prof.empty:
+                    continue
+                p = prof.iloc[0]
+                row = {"symbol": symbol, "date": p.get("statDate"),
+                       "ann_date": p.get("pubDate"), "roe": _pct(p.get("roeAvg")),
+                       "gross_margin": _pct(p.get("gpMargin"))}
+                g = self._df(self.bs.query_growth_data(code=code, year=year, quarter=q))
+                if not g.empty:
+                    row["profit_yoy"] = _pct(g.iloc[0].get("YOYNI"))
+                rows.append(row)
+        return first_disclosure(pd.DataFrame(rows)) if rows else pd.DataFrame()
+
+    def name_history(self, symbols: list[str] | None = None) -> pd.DataFrame:
+        """由逐日 isST 标志压缩出 ST 区间（name 记 "ST"/"正常"，仅供 ST 判定）。"""
+        out = []
+        for sym in symbols or []:
+            code = self._to_bs(sym)
+            if not code:
+                continue
+            df = self._df(self.bs.query_history_k_data_plus(
+                code, "date,isST", start_date="", end_date="", frequency="d",
+                adjustflag="3"))
+            if df.empty:
+                continue
+            flag = df["isST"] == "1"
+            starts = df.loc[flag.ne(flag.shift()), ["date"]].copy()
+            starts["st"] = flag[starts.index].values
+            ends = list(starts["date"].iloc[1:]) + [None]
+            for (d, st), e in zip(starts.itertuples(index=False), ends):
+                out.append({"symbol": sym, "name": "ST" if st else "正常",
+                            "start_date": d, "end_date": e})
+        return pd.DataFrame(out)
 
     # ── 工具 ──
     @staticmethod

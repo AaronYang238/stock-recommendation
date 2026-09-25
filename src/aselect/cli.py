@@ -11,7 +11,8 @@ import argparse
 import logging
 
 from .config import load_config
-from .data import build_cross_section, update_daily, update_index, update_symbols
+from .data import (build_cross_section, save_fundamentals_snapshot, update_daily,
+                   update_index, update_symbols)
 from .data.symbols import attach_industry
 from .datasource import get_datasource
 from .datasource.synthetic_source import SyntheticSource
@@ -64,7 +65,7 @@ def _update(args):
             fund = attach_industry(fund, ds.industry_map())
         except Exception as ie:  # noqa: BLE001
             print(f"⚠️ 行业映射获取失败，行业中性将退化：{ie}")
-        store.upsert_fundamentals(fund)
+        save_fundamentals_snapshot(store, fund)
         print("基本面 + 行业已更新。")
     except Exception as e:  # noqa: BLE001
         print(f"⚠️ 基本面拉取失败，已跳过（PE/ROE 等暂缺，不影响行情/技术指标）：{e}")
@@ -115,7 +116,7 @@ def _sync(args):
             fund = attach_industry(fund, ds.industry_map())
         except Exception as ie:  # noqa: BLE001
             print(f"  ⚠️ 行业映射失败：{ie}")
-        store.upsert_fundamentals(fund)
+        save_fundamentals_snapshot(store, fund)
     except Exception as e:  # noqa: BLE001
         print(f"  ⚠️ 基本面失败（PE/ROE 暂缺）：{e}")
 
@@ -142,6 +143,22 @@ def _sync(args):
     st = store.data_status()
     print(f"[sync] 完成。最新日线 {st.get('last_daily_date')} | "
           f"有财务 {st.get('n_with_fundamentals')} 只 | 本次写入日线 {n} 行")
+    store.close()
+
+
+def _backfill(args):
+    """回填历史 PIT 数据：逐日估值 / 全历史财报 / 行业归属历史 / 简称历史（可断点续跑）。"""
+    from .data.backfill import run_backfill
+    cfg = load_config()
+    store = get_storage(cfg)
+    ds = get_datasource(cfg)
+    what = tuple(w.strip() for w in args.what.split(",") if w.strip())
+    syms = store.get_symbols(include_delisted=True)["symbol"].tolist()
+    if args.limit:
+        syms = syms[: args.limit]
+    print(f"[backfill] 数据源 {ds.name} | {args.start} ~ {args.end or '今天'} | {what}")
+    out = run_backfill(ds, store, args.start, args.end, what=what, symbols=syms)
+    print(f"[backfill] 完成：{out}")
     store.close()
 
 
@@ -448,6 +465,14 @@ def main():
     sy.add_argument("--limit", type=int, default=0, help="0=全部")
     sy.add_argument("--top", type=int, default=20, help="每日推荐落库的只数")
     sy.set_defaults(func=_sync)
+
+    bf = sub.add_parser("backfill", help="回填历史 PIT 数据(估值/财报/行业/简称)")
+    bf.add_argument("--start", default="2015-01-01")
+    bf.add_argument("--end")
+    bf.add_argument("--what", default="valuation,fundamentals,industry,names",
+                    help="逗号分隔：valuation,fundamentals,industry,names")
+    bf.add_argument("--limit", type=int, default=0, help="仅前 N 只（调试用）；0=全部")
+    bf.set_defaults(func=_backfill)
 
     sub.add_parser("schedule", help="启动调度守护（收盘后自动 sync）").set_defaults(func=_schedule)
 

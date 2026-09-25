@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     exchange    TEXT,
     list_date   TEXT,
     delist_date TEXT,
-    status      TEXT          -- L(上市) / D(退市) / ST
+    status      TEXT,         -- L(上市) / D(退市) / ST
+    industry    TEXT          -- 当前行业（行业历史缺失时的兜底）
 );
 
 CREATE TABLE IF NOT EXISTS daily (
@@ -48,6 +49,36 @@ CREATE TABLE IF NOT EXISTS fundamentals (
     gross_margin REAL, debt_ratio REAL,
     total_mv REAL,
     PRIMARY KEY (symbol, date)
+);
+
+-- 逐日估值（PIT）：pe/pb/ps/市值 随股价逐日变化，必须按交易日存，
+-- 不能挂在财报行上（旧实现把"今天的估值"写进最新财报行 → 历史回测取不到/偷看未来）。
+CREATE TABLE IF NOT EXISTS valuation_daily (
+    symbol TEXT NOT NULL,
+    date   TEXT NOT NULL,
+    pe REAL, pb REAL, ps REAL,
+    total_mv REAL, circ_mv REAL,
+    turnover_rate REAL,
+    PRIMARY KEY (symbol, date)
+);
+CREATE INDEX IF NOT EXISTS idx_val_date ON valuation_daily(date);
+
+-- 行业归属历史（如申万一级，含纳入/剔除日）：按 as_of 取当时所属行业
+CREATE TABLE IF NOT EXISTS industry_history (
+    symbol   TEXT NOT NULL,
+    industry TEXT,
+    in_date  TEXT NOT NULL,
+    out_date TEXT,
+    PRIMARY KEY (symbol, in_date)
+);
+
+-- 证券简称历史：按 as_of 判定当时是否 ST（不能用"现在的名字"回看历史）
+CREATE TABLE IF NOT EXISTS name_history (
+    symbol     TEXT NOT NULL,
+    name       TEXT,
+    start_date TEXT NOT NULL,
+    end_date   TEXT,
+    PRIMARY KEY (symbol, start_date)
 );
 
 -- AI 产出特征：与其它数据同库，引擎层当普通因子读取。
@@ -124,6 +155,7 @@ class SQLiteStorage(Storage):
         wanted = {
             "fundamentals": [("industry", "TEXT"), ("ann_date", "TEXT")],
             "daily": [("turnover", "REAL"), ("net_inflow", "REAL")],
+            "symbols": [("industry", "TEXT")],
         }
         for table, cols in wanted.items():
             existing = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
@@ -257,6 +289,90 @@ class SQLiteStorage(Storage):
         if conds:
             sql += " WHERE " + " AND ".join(conds)
         return pd.read_sql(sql, self.conn, params=params)
+
+    # ── 逐日估值（PIT） ──
+    def upsert_valuation(self, df: pd.DataFrame) -> None:
+        self._upsert("valuation_daily", df, ["symbol", "date"])
+
+    def has_valuation(self) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM valuation_daily LIMIT 1").fetchone() is not None
+
+    def valuation_dates(self) -> set[str]:
+        return {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT date FROM valuation_daily")}
+
+    def get_valuation(self, symbols=None, as_of: str | None = None,
+                      max_stale_days: int = 15) -> pd.DataFrame:
+        """每只取 ≤as_of 的最近一条估值（停牌沿用，最多回看 max_stale_days 自然日）。
+        as_of=None → 以库中最新估值日为准。"""
+        if as_of is None:
+            row = self.conn.execute("SELECT MAX(date) FROM valuation_daily").fetchone()
+            if not row or not row[0]:
+                return pd.DataFrame()
+            as_of = row[0]
+        lo = (pd.Timestamp(as_of) - pd.Timedelta(days=max_stale_days)).strftime("%Y-%m-%d")
+        sql = "SELECT * FROM valuation_daily WHERE date > ? AND date <= ?"
+        params: list = [lo, as_of]
+        if symbols:
+            sql += f" AND symbol IN ({','.join('?' * len(symbols))})"
+            params += list(symbols)
+        df = pd.read_sql(sql, self.conn, params=params)
+        if df.empty:
+            return df
+        return (df.sort_values("date").groupby("symbol", as_index=False).tail(1)
+                  .reset_index(drop=True))
+
+    def clear_fundamental_valuation(self) -> int:
+        """清空财报行上遗留的估值列（旧 sync 把"同步当天的估值"写在最新财报行上，
+        按披露日回看会偷看未来）。估值改由 valuation_daily 提供。"""
+        cur = self.conn.execute(
+            "UPDATE fundamentals SET pe=NULL, pb=NULL, ps=NULL, total_mv=NULL "
+            "WHERE pe IS NOT NULL OR pb IS NOT NULL OR ps IS NOT NULL "
+            "OR total_mv IS NOT NULL")
+        self.conn.commit()
+        return cur.rowcount
+
+    # ── 行业历史 ──
+    def upsert_industry_history(self, df: pd.DataFrame) -> None:
+        self._upsert("industry_history", df, ["symbol", "in_date"])
+
+    def get_industry(self, symbols=None, as_of: str | None = None) -> dict:
+        """symbol → as_of 当日所属行业（in_date ≤ as_of < out_date）。无历史则空。"""
+        day = as_of or pd.Timestamp.today().strftime("%Y-%m-%d")
+        sql = ("SELECT symbol, industry, in_date FROM industry_history "
+               "WHERE in_date <= ? AND (out_date IS NULL OR out_date > ?)")
+        params: list = [day, day]
+        if symbols:
+            sql += f" AND symbol IN ({','.join('?' * len(symbols))})"
+            params += list(symbols)
+        df = pd.read_sql(sql, self.conn, params=params)
+        if df.empty:
+            return {}
+        df = df.sort_values("in_date").groupby("symbol").tail(1)
+        return dict(zip(df["symbol"], df["industry"]))
+
+    # ── 简称历史（PIT 判定 ST） ──
+    def upsert_name_history(self, df: pd.DataFrame) -> None:
+        self._upsert("name_history", df, ["symbol", "start_date"])
+
+    def has_name_history(self) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM name_history LIMIT 1").fetchone() is not None
+
+    def names_as_of(self, as_of: str, symbols=None) -> dict:
+        """symbol → as_of 当日的证券简称（start_date ≤ as_of 的最近一次更名）。"""
+        sql = ("SELECT symbol, name, start_date FROM name_history "
+               "WHERE start_date <= ?")
+        params: list = [as_of]
+        if symbols:
+            sql += f" AND symbol IN ({','.join('?' * len(symbols))})"
+            params += list(symbols)
+        df = pd.read_sql(sql, self.conn, params=params)
+        if df.empty:
+            return {}
+        df = df.sort_values("start_date").groupby("symbol").tail(1)
+        return dict(zip(df["symbol"], df["name"]))
 
     # ── 指数日线（基准） ──
     def upsert_index(self, code: str, df: pd.DataFrame) -> None:

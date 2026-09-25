@@ -16,8 +16,16 @@ from .symbols import classify_board, status_label
 log = logging.getLogger(__name__)
 
 
+VALUATION_COLS = ["pe", "pb", "ps", "total_mv", "circ_mv", "turnover_rate"]
+
+
 def update_symbols(ds: DataSource, store: Storage) -> int:
     df = ds.list_symbols()
+    try:                                   # 当前行业（行业历史缺失时的中性化兜底）
+        from .symbols import attach_industry
+        df = attach_industry(df, ds.industry_map())
+    except Exception as e:  # noqa: BLE001
+        log.warning("行业映射获取失败（symbols.industry 留空）：%s", e)
     store.upsert_symbols(df)
     log.info("更新股票列表 %d 只", len(df))
     return len(df)
@@ -71,6 +79,33 @@ def update_daily(ds: DataSource, store: Storage, symbols: list[str],
         log.error("hfq 不变量拒写 %d 只: %s", len(quarantined), quarantined[:10])
     log.info("增量写入日线 %d 行（adjust=%s）", n, adjust)
     return n
+
+
+def save_fundamentals_snapshot(store: Storage, fund: pd.DataFrame) -> int:
+    """把数据源的"估值+最新财报"快照拆开入库（PIT 修复）。
+
+    估值(pe/pb/ps/市值)属于**估值日**，写 valuation_daily(date=val_date，缺省今天)；
+    财务属于**报告期/披露日**，写 fundamentals 且不带估值列。旧实现把今天的估值
+    挂在最新财报行上，按披露日回看时会用到披露日之后的股价（前视）。
+    """
+    if fund is None or fund.empty:
+        return 0
+    fund = fund.copy()
+    today = pd.Timestamp.today().strftime("%Y-%m-%d")
+    val_cols = [c for c in VALUATION_COLS if c in fund.columns]
+    if val_cols:
+        val = fund[["symbol"] + val_cols].copy()
+        val["date"] = (fund["val_date"] if "val_date" in fund.columns
+                       else pd.Series(today, index=fund.index)).fillna(today)
+        val = val.dropna(subset=val_cols, how="all")
+        if hasattr(store, "upsert_valuation") and not val.empty:
+            try:
+                store.upsert_valuation(val)
+            except NotImplementedError:
+                pass
+    fin = fund.drop(columns=val_cols + ["val_date"], errors="ignore")
+    store.upsert_fundamentals(fin)
+    return len(fin)
 
 
 def update_index(ds: DataSource, store: Storage, code: str) -> int:
@@ -154,6 +189,30 @@ def build_cross_section(store: Storage, config: Config,
         base = pd.DataFrame({"symbol": syms}).merge(
             fund_latest, on="symbol", how="left")
 
+    # 估值（PIT）：有逐日估值表就以其 ≤as_of 的最近值为准，并丢弃财报行上的估值列
+    # （财报行上的估值是"同步当天"的快照，回看历史即前视）。无估值表的旧库/合成库
+    # 才沿用财报行估值（合成源按季生成、与披露日一致）。
+    if store.has_valuation():
+        base = base.drop(columns=[c for c in VALUATION_COLS if c in base.columns])
+        val = store.get_valuation(syms, as_of=as_of)
+        if not val.empty:
+            base = base.merge(val[["symbol"] + [c for c in VALUATION_COLS
+                                                if c in val.columns]],
+                              on="symbol", how="left")
+        for c in ("pe", "pb", "ps", "total_mv"):
+            if c not in base.columns:
+                base[c] = float("nan")
+
+    # 行业（PIT）：行业历史(as_of) > 财报行行业 > symbols 当前行业
+    ind_hist = store.get_industry(syms, as_of=as_of)
+    sym_meta = store.get_symbols()
+    cur_ind = (dict(zip(sym_meta["symbol"], sym_meta["industry"]))
+               if "industry" in sym_meta.columns else {})
+    ind = base["symbol"].map(ind_hist) if ind_hist else pd.Series(None, index=base.index)
+    if "industry" in base.columns:
+        ind = ind.fillna(base["industry"])
+    base["industry"] = ind.fillna(base["symbol"].map(cur_ind))
+
     # 价格因子（PIT：as_of 给定时只用 ≤as_of 的行情，否则动量/均线会偷看未来）
     adjust = config.datasource.get("adjust", "hfq")
     # 性能：回测循环里已把全量行情加载进 frames，直接复用（按 as_of 切片），
@@ -202,7 +261,7 @@ def build_cross_section(store: Storage, config: Config,
             on="symbol", how="left")
 
     # 附股票名 + 板块标注 + 状态(正常/ST/退市)
-    meta = store.get_symbols()[["symbol", "name", "status"]]
+    meta = sym_meta[["symbol", "name", "status"]]
     cross = cross.merge(meta, on="symbol", how="left")
     cross["board"] = cross["symbol"].map(classify_board)
     cross["status_label"] = cross["status"].map(status_label)

@@ -58,6 +58,26 @@ class Storage(ABC):
                   end: str | None = None) -> pd.DataFrame:
         return pd.DataFrame(columns=["date", "close"])
 
+    # ── PIT 辅助数据（可选实现；缺省即"无历史"，调用方回退）──
+    def upsert_valuation(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def has_valuation(self) -> bool:
+        return False
+
+    def get_valuation(self, symbols=None, as_of: str | None = None,
+                      max_stale_days: int = 15) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    def get_industry(self, symbols=None, as_of: str | None = None) -> dict:
+        return {}
+
+    def has_name_history(self) -> bool:
+        return False
+
+    def names_as_of(self, as_of: str, symbols=None) -> dict:
+        return {}
+
     def data_status(self) -> dict:
         return {}
 

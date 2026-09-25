@@ -179,7 +179,9 @@ def score_factors(
     cat_scores: dict[str, pd.Series] = {}
     orth_flag: dict[str, bool] = {}
     for cat, defs in factors.items():
-        present = [d for d in defs if d.field in out.columns]
+        # 全缺失的列视为不存在（否则全 0 类别会稀释总分权重）
+        present = [d for d in defs
+                   if d.field in out.columns and out[d.field].notna().any()]
         if not present:
             continue
         sub = pd.DataFrame(index=out.index)

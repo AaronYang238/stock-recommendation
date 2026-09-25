@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-SYMBOL_COLS = ["symbol", "name", "exchange", "list_date", "delist_date", "status"]
+SYMBOL_COLS = ["symbol", "name", "exchange", "list_date", "delist_date", "status",
+               "industry"]
 
 # 状态优先级：退市 > ST > 在市（合并冲突时取更"危险"的状态）
 _STATUS_RANK = {"D": 3, "ST": 2, "L": 1}
@@ -62,6 +63,14 @@ def classify_board(symbol: str | None) -> str:
     return "其他"
 
 
+def is_st_name(name: str | None) -> bool:
+    """简称是否为风险警示/退市整理（ST、*ST、S*ST、退市xx、xx退）。"""
+    if not name:
+        return False
+    u = str(name).upper().replace(" ", "")
+    return "ST" in u or u.startswith("退市") or u.endswith("退")
+
+
 def classify_status(name: str | None, *, default: str = "L") -> str:
     """按证券简称判定状态。名称含 ST / *ST → 风险警示股。"""
     if not name:
@@ -101,7 +110,7 @@ def merge_symbols(*frames: pd.DataFrame) -> pd.DataFrame:
     for sym, grp in allrows.groupby("symbol", sort=False):
         top = grp.iloc[0].copy()
         # 跨行回填非空字段（如退市行有 delist_date，在市行有 list_date）
-        for col in ("name", "exchange", "list_date", "delist_date"):
+        for col in ("name", "exchange", "list_date", "delist_date", "industry"):
             non_null = grp[col].dropna()
             if pd.isna(top[col]) and not non_null.empty:
                 top[col] = non_null.iloc[0]

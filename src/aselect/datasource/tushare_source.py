@@ -8,7 +8,7 @@ import os
 
 import pandas as pd
 
-from .base import DataSource
+from .base import DataSource, first_disclosure
 
 
 class TushareSource(DataSource):
@@ -63,13 +63,16 @@ class TushareSource(DataSource):
         # 退市标的（防幸存者偏差）
         try:
             dead = self._call("stock_basic", exchange="", list_status="D",
-                              fields="ts_code,name,exchange,list_date,delist_date")
+                              fields="ts_code,name,exchange,list_date,delist_date,industry")
             dead = dead.rename(columns={"ts_code": "symbol"})
             dead["symbol"] = dead["symbol"].str.split(".").str[0]
             dead["status"] = "D"
         except Exception:  # noqa: BLE001
             dead = None
-        cols = ["symbol", "name", "exchange", "list_date", "delist_date", "status"]
+        cols = ["symbol", "name", "exchange", "list_date", "delist_date", "status", "industry"]
+        for df_ in (live, dead):
+            if df_ is not None and "industry" not in df_.columns:
+                df_["industry"] = None
         return merge_symbols(live[cols], dead[cols] if dead is not None else None)
 
     def industry_map(self) -> dict[str, str]:
@@ -106,9 +109,10 @@ class TushareSource(DataSource):
             return pd.DataFrame()
         imap = self.industry_map()
         valuation = self._latest_valuation()           # symbol -> {pe,pb,ps,total_mv}
+        val_date = getattr(self, "_val_date", None)
         rows = []
         for sym in symbols:
-            row = {"symbol": sym, "industry": imap.get(sym)}
+            row = {"symbol": sym, "industry": imap.get(sym), "val_date": val_date}
             row.update(valuation.get(sym, {}))
             try:
                 fi = self._call("fina_indicator", ts_code=self._to_ts_code(sym),
@@ -140,6 +144,7 @@ class TushareSource(DataSource):
                 continue
             if df is not None and not df.empty:
                 df["symbol"] = df["ts_code"].str.split(".").str[0]
+                self._val_date = f"{d[:4]}-{d[4:6]}-{d[6:]}"   # 估值所属交易日
                 out = {}
                 for r in df.itertuples():
                     tmv = _f(r.total_mv)
@@ -147,6 +152,106 @@ class TushareSource(DataSource):
                                      "total_mv": tmv * 1e4 if tmv is not None else None}
                 return out
         return {}
+
+    # ── 历史 PIT 数据（backfill）──
+    def trade_dates(self, start: str, end: str) -> list[str]:
+        df = self._call("trade_cal", exchange="SSE", is_open="1",
+                        start_date=start.replace("-", ""), end_date=end.replace("-", ""),
+                        fields="cal_date")
+        if df is None or df.empty:
+            return []
+        return sorted(_d(x) for x in df["cal_date"])
+
+    def valuation_by_date(self, trade_date: str) -> pd.DataFrame:
+        df = self._call("daily_basic", trade_date=trade_date.replace("-", ""),
+                        fields="ts_code,trade_date,pe_ttm,pe,pb,ps_ttm,ps,"
+                               "total_mv,circ_mv,turnover_rate")
+        if df is None or df.empty:
+            return pd.DataFrame()
+        out = pd.DataFrame({
+            "symbol": df["ts_code"].str.split(".").str[0],
+            "date": df["trade_date"].map(_d),
+            # TTM 口径优先（与季报节奏无关、跨期可比）；缺失回退静态
+            "pe": pd.to_numeric(df["pe_ttm"], errors="coerce").fillna(
+                pd.to_numeric(df["pe"], errors="coerce")),
+            "pb": pd.to_numeric(df["pb"], errors="coerce"),
+            "ps": pd.to_numeric(df["ps_ttm"], errors="coerce").fillna(
+                pd.to_numeric(df["ps"], errors="coerce")),
+            "total_mv": pd.to_numeric(df["total_mv"], errors="coerce") * 1e4,   # 万元 → 元
+            "circ_mv": pd.to_numeric(df["circ_mv"], errors="coerce") * 1e4,
+            "turnover_rate": pd.to_numeric(df["turnover_rate"], errors="coerce"),
+        })
+        return out
+
+    def fundamentals_history(self, symbol: str, start: str) -> pd.DataFrame:
+        fi = self._call("fina_indicator", ts_code=self._to_ts_code(symbol),
+                        start_date=start.replace("-", ""),
+                        fields="end_date,ann_date,roe,roa,grossprofit_margin,"
+                               "debt_to_assets,or_yoy,netprofit_yoy")
+        if fi is None or fi.empty:
+            return pd.DataFrame()
+        out = pd.DataFrame({
+            "symbol": symbol,
+            "date": fi["end_date"].map(_d), "ann_date": fi["ann_date"].map(_d),
+            "roe": pd.to_numeric(fi["roe"], errors="coerce"),
+            "roa": pd.to_numeric(fi["roa"], errors="coerce"),
+            "gross_margin": pd.to_numeric(fi["grossprofit_margin"], errors="coerce"),
+            "debt_ratio": pd.to_numeric(fi["debt_to_assets"], errors="coerce"),
+            "revenue_yoy": pd.to_numeric(fi["or_yoy"], errors="coerce"),
+            "profit_yoy": pd.to_numeric(fi["netprofit_yoy"], errors="coerce"),
+        })
+        return first_disclosure(out)
+
+    def industry_history(self) -> pd.DataFrame:
+        """申万(2021)一级行业成分历史（index_member_all，含纳入/剔除日）。"""
+        cls = self._call("index_classify", level="L1", src="SW2021")
+        if cls is None or cls.empty:
+            return pd.DataFrame()
+        frames = []
+        for code, name in zip(cls["index_code"], cls["industry_name"]):
+            for is_new in ("Y", "N"):
+                m = self._call("index_member_all", l1_code=code, is_new=is_new,
+                               fields="ts_code,l1_name,in_date,out_date")
+                if m is None or m.empty:
+                    continue
+                frames.append(pd.DataFrame({
+                    "symbol": m["ts_code"].str.split(".").str[0],
+                    "industry": m["l1_name"].fillna(name),
+                    "in_date": m["in_date"].map(_d),
+                    "out_date": m["out_date"].map(_d),
+                }))
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True).dropna(subset=["in_date"])
+
+    def name_history(self, symbols: list[str] | None = None) -> pd.DataFrame:
+        """namechange 全市场分页拉取（每页 ≤ 5000 行）；给定 symbols 时逐只拉。"""
+        fields = "ts_code,name,start_date,end_date"
+        frames = []
+        if symbols:
+            for sym in symbols:
+                df = self._call("namechange", ts_code=self._to_ts_code(sym), fields=fields)
+                if df is not None and not df.empty:
+                    frames.append(df)
+        else:
+            offset = 0
+            while True:
+                df = self._call("namechange", fields=fields, limit=5000, offset=offset)
+                if df is None or df.empty:
+                    break
+                frames.append(df)
+                if len(df) < 5000:
+                    break
+                offset += 5000
+        if not frames:
+            return pd.DataFrame()
+        df = pd.concat(frames, ignore_index=True)
+        return pd.DataFrame({
+            "symbol": df["ts_code"].str.split(".").str[0],
+            "name": df["name"],
+            "start_date": df["start_date"].map(_d),
+            "end_date": df["end_date"].map(_d),
+        }).dropna(subset=["start_date"]).drop_duplicates(["symbol", "start_date"])
 
     @staticmethod
     def _to_ts_code(symbol: str) -> str:
