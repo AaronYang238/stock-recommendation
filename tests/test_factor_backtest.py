@@ -99,3 +99,31 @@ def test_suspended_holding_marked_at_last_price():
     sel = {idx[0]: {"A": 1.0}, idx[1]: {"A": 1.0}}
     rep = simulate(panel, list(idx), sel, {}, pd.Series([1.0] * 3, index=idx), COST0)
     assert abs(rep.total_return - 0.2) < 1e-9
+
+
+def _store_one(tmp_path, opens, closes, sym="600001"):
+    s = SQLiteStorage(str(tmp_path / "one.sqlite"))
+    s.upsert_symbols(pd.DataFrame([{"symbol": sym, "name": "甲", "status": "L"}]))
+    d = pd.bdate_range("2024-01-01", periods=len(closes))
+    s.upsert_daily(sym, pd.DataFrame({"date": d.strftime("%Y-%m-%d"), "open": opens,
+                                      "high": closes, "low": closes, "close": closes,
+                                      "volume": 1e6, "amount": 1e7}), "hfq")
+    return s, d
+
+
+def test_strategy_executes_at_next_open(tmp_path):
+    n = 70
+    closes = [10.0 * (1.001 ** i) for i in range(n)]
+    opens = [c * 0.99 for c in closes]            # 开盘系统性低于收盘
+    s, d = _store_one(tmp_path, opens, closes)
+    rep = run_strategy_backtest(s, _cfg(), freq="M", top_n=1)
+    # 期收益必须由"次日开盘→次日开盘"构成
+    sched = [x for x in _rebal(d) if x != d[-1]]
+    o = pd.Series(opens, index=d).shift(-1)
+    expect = o[sched[-1]] / o[sched[0]] - 1
+    assert abs(rep.total_return - round(expect, 4)) < 1e-4
+
+
+def _rebal(d):
+    s = pd.Series(d, index=d)
+    return list(s.groupby(d.to_period("M")).last().values)

@@ -27,41 +27,91 @@ def run_strategy_backtest(
     benchmark_prices: pd.Series | None = None,
     limit_pct: float | None = None,
     weights: dict | None = None,
+    hold_buffer: float = 1.0,
 ) -> FactorBacktestReport:
+    """股票池级多因子回测。信号日 t 收盘出信号 → **t+1 开盘**成交（旧实现按 t 日收盘价
+    成交，而信号本身就用了 t 日收盘价，等于在同一价格上"看完再买"）。
+
+    - 买入：t+1 开盘有价且未开在涨停价；
+    - 卖出：t+1 停牌或开在跌停价 → 卖不出，按原权重顺延持有（新仓分剩余权重）；
+    - hold_buffer>1：已持仓只要仍排在前 top_n×hold_buffer 就不卖（缓冲带降换手）。
+    """
+    from .engine.limits import limit_threshold
     adjust = config.datasource.get("adjust", "hfq")
     # 含退市（防幸存者偏差）；板块按账户权限过滤，ST 逐日剔除
     universe = filter_tradable_universe(store, config,
                                         build_universe(store, include_delisted=True))
-    panel = _price_panel(store, universe, adjust, start, end)
+    panel, opens = _price_panels(store, universe, adjust, start, end)
     if panel.shape[0] < 2 or panel.shape[1] == 0:
         return simulate(panel, [], {}, {}, pd.Series(dtype=float), config.backtest)
+    exec_px = opens.shift(-1)          # 在 t 行放 t+1 开盘价：t 日信号的可成交价
 
-    schedule = _rebalance_dates(panel.index, freq)
+    # 调仓日须存在次日开盘价（末个交易日无法在"次日"成交）
+    schedule = [t for t in _rebalance_dates(panel.index, freq)
+                if exec_px.loc[t].notna().any()]
     selections: dict = {}
     scores: dict = {}
+    prev_w: dict = {}
+
+    def _thr(sym, t, st):
+        return limit_pct if limit_pct is not None else limit_threshold(sym, t, st)
+
     for t in schedule:
         as_of = pd.Timestamp(t).strftime("%Y-%m-%d")
         cross = exclude_st_rows(
             build_cross_section(store, config, symbols=universe, as_of=as_of), config)
+        st_map = dict(zip(cross["symbol"], cross["is_st"])) if "is_st" in cross.columns else {}
+        close_t, open_n = panel.loc[t], exec_px.loc[t]
+
+        def _gap(sym):
+            c, o = close_t.get(sym), open_n.get(sym)
+            if pd.isna(c) or pd.isna(o) or c <= 0:
+                return None
+            return o / c - 1
+
+        def _sell_blocked(sym):
+            g = _gap(sym)
+            if g is None:                                   # 次日无价：停牌 or 已退市
+                return not panel[sym].loc[t:].iloc[1:].dropna().empty
+            return g <= -_thr(sym, t, bool(st_map.get(sym, False)))
+
         if cross.empty:
-            selections[t], scores[t] = {}, pd.Series(dtype=float)
-            continue
-        scored = score_factors(cross, weights=weights)   # weights=None 即等权
-        tradable = _tradable(panel, t, limit_pct)
-        cand = scored[scored["symbol"].isin(tradable)]
-        sel = cand.head(top_n)
-        if len(sel):
-            w = 1.0 / len(sel)
-            selections[t] = {s: w for s in sel["symbol"]}
+            scores[t] = pd.Series(dtype=float)
+            ranked = []
         else:
-            selections[t] = {}
-        scores[t] = scored.set_index("symbol")["total_score"]
+            scored = score_factors(cross, weights=weights)   # weights=None 即等权
+            scores[t] = scored.set_index("symbol")["total_score"]
+            ranked = list(scored["symbol"])
+
+        keep = []
+        if hold_buffer > 1.0 and prev_w:
+            band = set(ranked[: int(round(top_n * hold_buffer))])
+            keep = [s_ for s_ in prev_w if s_ in band and _gap(s_) is not None]
+        buyable = []
+        for sym in ranked:
+            if len(keep) + len(buyable) >= top_n:
+                break
+            if sym in keep:
+                continue
+            g = _gap(sym)
+            if g is None or g >= _thr(sym, t, bool(st_map.get(sym, False))):
+                continue                                    # 停牌 / 开盘涨停买不进
+            buyable.append(sym)
+        picks = keep + buyable
+        carried = {s_: w_ for s_, w_ in prev_w.items()
+                   if s_ not in picks and _sell_blocked(s_)}
+        room = max(1.0 - sum(carried.values()), 0.0)
+        sel = dict(carried)
+        if picks and room > 0:
+            sel.update({s_: room / len(picks) for s_ in picks})
+        selections[t] = sel
+        prev_w = sel
 
     if benchmark_prices is None:
         benchmark_prices = _load_benchmark(store, config, panel)
     bench = benchmark_prices.reindex(panel.index).ffill()
-    return simulate(panel, list(schedule), selections, scores, bench, config.backtest,
-                    delisted=_delisted_in_panel(store, panel),
+    return simulate(exec_px, list(schedule), selections, scores, bench, config.backtest,
+                    delisted=_delisted_in_panel(store, exec_px),
                     delist_haircut=_delist_haircut(config))
 
 
@@ -432,7 +482,8 @@ def run_validated_fund_backtest(
     # 去重：每段帧+截面只建一次，base/fund 两线共用（串行、确定性不变）。
     results = {}
     _progress(progress, "== 阶段2/4: train 段建帧+截面 ==")
-    train_frames = _ohlc_frames(store, universe, adjust, start, split_date, config)
+    train_frames = _ohlc_frames(store, universe, adjust, _warm_start(start),
+                                split_date, config)
     train_panel = _price_panel(store, universe, adjust, start, split_date)
     train_schedule = _rebalance_dates(train_panel.index, freq)
     train_cross = _build_cross_by_t(store, config, universe, train_frames,
@@ -447,7 +498,8 @@ def run_validated_fund_backtest(
     del train_frames, train_panel, train_cross
 
     _progress(progress, "== 阶段4/4: oos 段建帧+截面+回测 ==")
-    oos_frames = _ohlc_frames(store, universe, adjust, split_date, end, config)
+    oos_frames = _ohlc_frames(store, universe, adjust, _warm_start(split_date),
+                              end, config)
     oos_panel = _price_panel(store, universe, adjust, split_date, end)
     oos_schedule = _rebalance_dates(oos_panel.index, freq)
     oos_cross = _build_cross_by_t(store, config, universe, oos_frames,
@@ -508,7 +560,7 @@ def _run_swing(store, config, start, end, freq, top_n, max_per_industry,
                 else filter_tradable_universe(store, config,
                                               build_universe(store, include_delisted=True)))
     if frames is None:
-        frames = _ohlc_frames(store, universe, adjust, start, end, config)
+        frames = _ohlc_frames(store, universe, adjust, _warm_start(start), end, config)
     if panel is None:
         panel = _price_panel(store, universe, adjust, start, end)
     if panel.shape[0] < 2 or not frames:
@@ -631,7 +683,7 @@ def run_swing_portfolio(
                 else filter_tradable_universe(store, config,
                                               build_universe(store, include_delisted=True)))
     if frames is None:
-        frames = _ohlc_frames(store, universe, adjust, start, end, config)
+        frames = _ohlc_frames(store, universe, adjust, _warm_start(start), end, config)
     if panel is None:
         panel = _price_panel(store, universe, adjust, start, end)
     if panel.shape[0] < 2 or not frames:
@@ -699,6 +751,20 @@ def latest_candidates(store: Storage, config: Config, top_n: int = 10) -> list:
 
 
 # ── 数据准备 ──────────────────────────────────────────────
+def _price_panels(store: Storage, symbols, adjust, start, end):
+    """(收盘宽表, 开盘宽表)，index=日期, columns=symbol，后复权。"""
+    closes, opens = {}, {}
+    for sym in symbols:
+        d = store.get_daily(sym, adjust, start=start, end=end)
+        if d.empty:
+            continue
+        d = d.set_index(pd.to_datetime(d["date"]))
+        closes[sym], opens[sym] = d["close"], d["open"]
+    if not closes:
+        return pd.DataFrame(), pd.DataFrame()
+    return pd.DataFrame(closes).sort_index(), pd.DataFrame(opens).sort_index()
+
+
 def _price_panel(store: Storage, symbols, adjust, start, end) -> pd.DataFrame:
     """宽表：index=日期, columns=symbol, 值=后复权收盘。"""
     series = {}
@@ -754,6 +820,15 @@ def _attach_limits(store: Storage, frames: dict) -> None:
             k = np.searchsorted(starts, fr.index.values, side="right") - 1
             st = np.where(k >= 0, flags[np.clip(k, 0, None)], False)
         fr["limit_pct"] = limit_series(sym, fr.index, st)
+
+
+def _warm_start(start: str | None, days: int = 200) -> str | None:
+    """指标预热起点：段起点前推 ~200 自然日（≈130 交易日，覆盖 MA60/动量60/ATR）。
+    只读取过去的数据，不产生前视；旧实现从段起点才开始算指标，样本外前 60 日
+    mom_60/MA20 为空、入场闸门全拒。"""
+    if not start:
+        return start
+    return (pd.Timestamp(start) - pd.Timedelta(days=days)).strftime("%Y-%m-%d")
 
 
 def _delist_haircut(config) -> float:

@@ -126,3 +126,15 @@ def test_run_validated_swing_deterministic(tmp_path):
     b = run_validated_swing(store, cfg, freq="W", top_n=5, oos_split=0.7)
     assert a["split_date"] == b["split_date"]
     assert a["oos"].expectancy == b["oos"].expectancy
+
+
+def test_segment_frames_have_indicator_warmup(tmp_path):
+    from aselect.data import build_cross_section
+    from aselect.runner import _ohlc_frames, _warm_start
+    store, cfg = _seed(tmp_path)
+    d = store.get_daily("600519", "hfq")["date"]
+    start = d.iloc[150].strftime("%Y-%m-%d")
+    frames = _ohlc_frames(store, ["600519"], "hfq", _warm_start(start), None, cfg)
+    assert frames["600519"].index[0] < pd.Timestamp(start)
+    cross = build_cross_section(store, cfg, symbols=["600519"], as_of=start, frames=frames)
+    assert pd.notna(cross["mom_60"].iloc[0])        # 段首即可用动量/均线，不再空窗 60 日
